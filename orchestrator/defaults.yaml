@@ -9,3 +9,4 @@ max_retries: 3
 max_green_retries: 3
 max_fix_retries: 2
 stage_timeout: 3600
+skip_stages: []

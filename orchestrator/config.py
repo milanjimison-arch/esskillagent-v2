@@ -4,7 +4,7 @@ Load order (later sources override earlier ones):
   1. defaults.yaml  — bundled with the package
   2. brownfield.yaml — project root, optional (v1 compatibility)
   3. .orchestrator.yaml — project root, optional (project overrides)
-  4. Environment variables with ORCH_ prefix
+  4. Environment variables with ORCH_ or ORCHESTRATOR_ prefix
 """
 
 from __future__ import annotations
@@ -78,17 +78,48 @@ def _coerce_env_value(raw: str, default_value: Any) -> Any:
     return raw
 
 
+_POSITIVE_INT_KEYS = ("ci_timeout", "max_retries", "stage_timeout", "max_green_retries")
+_NON_NEGATIVE_INT_KEYS = ("max_fix_retries",)
+
+
 def _apply_env_overrides(config: dict, defaults: dict) -> dict:
-    """Return a new dict with ORCH_* env vars applied as top-level overrides."""
+    """Return a new dict with ORCH_* and ORCHESTRATOR_* env vars applied as top-level overrides."""
     result = dict(config)
-    prefix = "ORCH_"
+    prefixes = [("ORCH_", 5), ("ORCHESTRATOR_", 13)]
     for env_key, env_val in os.environ.items():
-        if not env_key.startswith(prefix):
-            continue
-        config_key = env_key[len(prefix):].lower()
-        default_value = defaults.get(config_key)
-        result[config_key] = _coerce_env_value(env_val, default_value)
+        for prefix, prefix_len in prefixes:
+            if env_key.startswith(prefix):
+                config_key = env_key[prefix_len:].lower()
+                default_value = defaults.get(config_key)
+                result[config_key] = _coerce_env_value(env_val, default_value)
+                break
     return result
+
+
+def _validate_config(config: dict) -> None:
+    """Validate configuration values and raise ConfigError for invalid ones."""
+    for key in _POSITIVE_INT_KEYS:
+        if key in config:
+            val = config[key]
+            if not isinstance(val, int) or isinstance(val, bool):
+                raise ConfigError(
+                    f"Invalid value for {key}: expected a positive integer, got {type(val).__name__}"
+                )
+            if val <= 0:
+                raise ConfigError(
+                    f"Invalid value for {key}: must be > 0, got {val}"
+                )
+    for key in _NON_NEGATIVE_INT_KEYS:
+        if key in config:
+            val = config[key]
+            if not isinstance(val, int) or isinstance(val, bool):
+                raise ConfigError(
+                    f"Invalid value for {key}: expected a non-negative integer, got {type(val).__name__}"
+                )
+            if val < 0:
+                raise ConfigError(
+                    f"Invalid value for {key}: must be >= 0, got {val}"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +162,7 @@ class ConfigLoader:
         # Layer 4: environment variable overrides
         merged = _apply_env_overrides(merged, defaults)
 
+        _validate_config(merged)
         self._config = merged
         return merged
 
