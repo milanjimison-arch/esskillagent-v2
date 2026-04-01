@@ -20,24 +20,156 @@ Design rules (from pitfalls.md and CLAUDE.md):
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
+from typing import Any
+
+import aiosqlite
+
+_SCHEMA_VERSION = 2
+
+
+def _now() -> str:
+    """Return current UTC time as ISO 8601 string."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+_DDL = """
+CREATE TABLE IF NOT EXISTS tasks (
+    task_id TEXT PRIMARY KEY,
+    description TEXT,
+    file_path TEXT,
+    parallel INTEGER DEFAULT 0,
+    user_story TEXT,
+    requirements TEXT,
+    status TEXT DEFAULT 'pending',
+    group_name TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS reviews (
+    review_id TEXT PRIMARY KEY,
+    task_id TEXT,
+    review_type TEXT,
+    passed INTEGER,
+    findings TEXT,
+    raw_output TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS evidence (
+    evidence_id TEXT PRIMARY KEY,
+    pipeline_id TEXT,
+    stage TEXT,
+    task_id TEXT,
+    event_type TEXT,
+    detail TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS stage_progress (
+    pipeline_id TEXT,
+    stage TEXT,
+    status TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    review_attempts INTEGER DEFAULT 0,
+    checkpoint_data TEXT,
+    PRIMARY KEY (pipeline_id, stage)
+);
+
+CREATE TABLE IF NOT EXISTS step_status (
+    pipeline_id TEXT,
+    stage TEXT,
+    step TEXT,
+    status TEXT,
+    detail TEXT,
+    updated_at TEXT,
+    PRIMARY KEY (pipeline_id, stage, step)
+);
+
+CREATE TABLE IF NOT EXISTS lvl (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pipeline_id TEXT,
+    level TEXT,
+    message TEXT,
+    detail TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS checkpoints (
+    pipeline_id TEXT,
+    stage TEXT,
+    step TEXT,
+    state_json TEXT,
+    created_at TEXT,
+    PRIMARY KEY (pipeline_id, stage, step)
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pipelines (
+    pipeline_id TEXT PRIMARY KEY,
+    project_path TEXT NOT NULL,
+    requirement_path TEXT,
+    current_stage TEXT,
+    status TEXT DEFAULT 'running',
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS config_cache (
+    pipeline_id TEXT PRIMARY KEY,
+    config_json TEXT NOT NULL,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS task_groups (
+    group_name TEXT PRIMARY KEY,
+    sort_order INTEGER NOT NULL,
+    task_count INTEGER DEFAULT 0
+);
+"""
+
 
 class Store:
-    """SQLite store stub — raises NotImplementedError on all operations."""
+    """Async SQLite store for E+S Orchestrator v2."""
 
     def __init__(self, db_path: str) -> None:
-        raise NotImplementedError
+        self.db_path = db_path
+        self._conn: aiosqlite.Connection | None = None
 
     async def __aenter__(self) -> "Store":
-        raise NotImplementedError
+        await self.initialize()
+        return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        raise NotImplementedError
+        await self.close()
 
     async def initialize(self) -> None:
-        raise NotImplementedError
+        """Open connection, enable WAL, create schema, set schema version."""
+        self._conn = await aiosqlite.connect(self.db_path)
+        self._conn.row_factory = aiosqlite.Row
+        await self._conn.execute("PRAGMA journal_mode=WAL")
+        await self._conn.executescript(_DDL)
+        await self._conn.commit()
+        version_val = await self.get_setting("schema_version")
+        if version_val is None:
+            await self.set_setting("schema_version", str(_SCHEMA_VERSION))
 
     async def close(self) -> None:
-        raise NotImplementedError
+        """Close the connection idempotently."""
+        if self._conn is not None:
+            await self._conn.close()
+            self._conn = None
+
+    def is_open(self) -> bool:
+        return self._conn is not None
 
     # ------------------------------------------------------------------ #
     # pipelines                                                            #
@@ -51,10 +183,27 @@ class Store:
         current_stage: str,
         status: str,
     ) -> None:
-        raise NotImplementedError
+        now = _now()
+        await self._conn.execute(
+            """INSERT INTO pipelines
+               (pipeline_id, project_path, requirement_path, current_stage, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(pipeline_id) DO UPDATE SET
+                 project_path=excluded.project_path,
+                 requirement_path=excluded.requirement_path,
+                 current_stage=excluded.current_stage,
+                 status=excluded.status,
+                 updated_at=excluded.updated_at""",
+            (pipeline_id, project_path, requirement_path, current_stage, status, now, now),
+        )
+        await self._conn.commit()
 
     async def get_pipeline(self, pipeline_id: str) -> dict | None:
-        raise NotImplementedError
+        async with self._conn.execute(
+            "SELECT * FROM pipelines WHERE pipeline_id = ?", (pipeline_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
 
     # ------------------------------------------------------------------ #
     # tasks                                                                #
@@ -71,16 +220,47 @@ class Store:
         status: str,
         group_name: str,
     ) -> None:
-        raise NotImplementedError
+        now = _now()
+        reqs_json = json.dumps(requirements)
+        parallel_int = int(bool(parallel))
+        await self._conn.execute(
+            """INSERT OR REPLACE INTO tasks
+               (task_id, description, file_path, parallel, user_story, requirements,
+                status, group_name, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (task_id, description, file_path, parallel_int, user_story,
+             reqs_json, status, group_name, now, now),
+        )
+        await self._conn.commit()
 
     async def get_task(self, task_id: str) -> dict | None:
-        raise NotImplementedError
+        async with self._conn.execute(
+            "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["requirements"] = json.loads(result["requirements"]) if result["requirements"] else []
+        return result
 
     async def list_tasks(self) -> list[dict]:
-        raise NotImplementedError
+        async with self._conn.execute("SELECT * FROM tasks") as cur:
+            rows = await cur.fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["requirements"] = json.loads(d["requirements"]) if d["requirements"] else []
+            result.append(d)
+        return result
 
     async def update_task_status(self, task_id: str, status: str) -> None:
-        raise NotImplementedError
+        now = _now()
+        await self._conn.execute(
+            "UPDATE tasks SET status = ?, updated_at = ? WHERE task_id = ?",
+            (status, now, task_id),
+        )
+        await self._conn.commit()
 
     # ------------------------------------------------------------------ #
     # stage_progress                                                       #
@@ -96,12 +276,23 @@ class Store:
         review_attempts: int = 0,
         checkpoint_data: str | None = None,
     ) -> None:
-        raise NotImplementedError
+        await self._conn.execute(
+            """INSERT OR REPLACE INTO stage_progress
+               (pipeline_id, stage, status, started_at, completed_at,
+                review_attempts, checkpoint_data)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (pipeline_id, stage, status, started_at, completed_at,
+             review_attempts, checkpoint_data),
+        )
+        await self._conn.commit()
 
-    async def get_stage_progress(
-        self, pipeline_id: str, stage: str
-    ) -> dict | None:
-        raise NotImplementedError
+    async def get_stage_progress(self, pipeline_id: str, stage: str) -> dict | None:
+        async with self._conn.execute(
+            "SELECT * FROM stage_progress WHERE pipeline_id = ? AND stage = ?",
+            (pipeline_id, stage),
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
 
     # ------------------------------------------------------------------ #
     # checkpoints                                                          #
@@ -114,12 +305,22 @@ class Store:
         step: str,
         state_json: str,
     ) -> None:
-        raise NotImplementedError
+        now = _now()
+        await self._conn.execute(
+            """INSERT OR REPLACE INTO checkpoints
+               (pipeline_id, stage, step, state_json, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (pipeline_id, stage, step, state_json, now),
+        )
+        await self._conn.commit()
 
-    async def load_checkpoint(
-        self, pipeline_id: str, stage: str, step: str
-    ) -> dict | None:
-        raise NotImplementedError
+    async def load_checkpoint(self, pipeline_id: str, stage: str, step: str) -> dict | None:
+        async with self._conn.execute(
+            "SELECT * FROM checkpoints WHERE pipeline_id = ? AND stage = ? AND step = ?",
+            (pipeline_id, stage, step),
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
 
     # ------------------------------------------------------------------ #
     # reviews                                                              #
@@ -134,10 +335,28 @@ class Store:
         findings: list[str],
         raw_output: str,
     ) -> None:
-        raise NotImplementedError
+        now = _now()
+        passed_int = int(bool(passed))
+        findings_json = json.dumps(findings)
+        await self._conn.execute(
+            """INSERT INTO reviews
+               (review_id, task_id, review_type, passed, findings, raw_output, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (review_id, task_id, review_type, passed_int, findings_json, raw_output, now),
+        )
+        await self._conn.commit()
 
     async def get_reviews_for_task(self, task_id: str) -> list[dict]:
-        raise NotImplementedError
+        async with self._conn.execute(
+            "SELECT * FROM reviews WHERE task_id = ?", (task_id,)
+        ) as cur:
+            rows = await cur.fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["findings"] = json.loads(d["findings"]) if d["findings"] else []
+            result.append(d)
+        return result
 
     # ------------------------------------------------------------------ #
     # evidence                                                             #
@@ -152,39 +371,67 @@ class Store:
         event_type: str,
         detail: str,
     ) -> None:
-        raise NotImplementedError
+        now = _now()
+        await self._conn.execute(
+            """INSERT INTO evidence
+               (evidence_id, pipeline_id, stage, task_id, event_type, detail, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (evidence_id, pipeline_id, stage, task_id, event_type, detail, now),
+        )
+        await self._conn.commit()
 
-    async def list_evidence(
-        self, pipeline_id: str
-    ) -> list[dict]:
-        raise NotImplementedError
+    async def list_evidence(self, pipeline_id: str) -> list[dict]:
+        async with self._conn.execute(
+            "SELECT * FROM evidence WHERE pipeline_id = ?", (pipeline_id,)
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(row) for row in rows]
 
     # ------------------------------------------------------------------ #
     # settings                                                             #
     # ------------------------------------------------------------------ #
 
     async def set_setting(self, key: str, value: str) -> None:
-        raise NotImplementedError
+        now = _now()
+        await self._conn.execute(
+            """INSERT OR REPLACE INTO settings (key, value, updated_at)
+               VALUES (?, ?, ?)""",
+            (key, value, now),
+        )
+        await self._conn.commit()
 
     async def get_setting(self, key: str) -> str | None:
-        raise NotImplementedError
+        async with self._conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ) as cur:
+            row = await cur.fetchone()
+        return row[0] if row else None
 
     # ------------------------------------------------------------------ #
     # config_cache                                                         #
     # ------------------------------------------------------------------ #
 
     async def cache_config(self, pipeline_id: str, config_json: str) -> None:
-        raise NotImplementedError
+        now = _now()
+        await self._conn.execute(
+            """INSERT OR REPLACE INTO config_cache (pipeline_id, config_json, created_at)
+               VALUES (?, ?, ?)""",
+            (pipeline_id, config_json, now),
+        )
+        await self._conn.commit()
 
     async def load_cached_config(self, pipeline_id: str) -> str | None:
-        raise NotImplementedError
+        async with self._conn.execute(
+            "SELECT config_json FROM config_cache WHERE pipeline_id = ?",
+            (pipeline_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return row[0] if row else None
 
     # ------------------------------------------------------------------ #
     # schema helpers                                                       #
     # ------------------------------------------------------------------ #
 
     async def get_schema_version(self) -> int:
-        raise NotImplementedError
-
-    def is_open(self) -> bool:
-        raise NotImplementedError
+        value = await self.get_setting("schema_version")
+        return int(value) if value is not None else 0
