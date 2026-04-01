@@ -21,6 +21,18 @@ from typing import Any
 
 STAGE_NAMES: tuple[str, ...] = ("spec", "plan", "implement", "acceptance")
 
+# Atomic stages — always re-run from start when resuming
+ATOMIC_STAGES: tuple[str, ...] = ("spec", "plan")
+
+
+# ---------------------------------------------------------------------------
+# NoCheckpointError — raised when resume() is called without a checkpoint
+# ---------------------------------------------------------------------------
+
+
+class NoCheckpointError(Exception):
+    """Raised when resume() is called but no checkpoint file/record exists."""
+
 
 # ---------------------------------------------------------------------------
 # PipelineResult — frozen dataclass (immutable DTO)
@@ -140,3 +152,10 @@ class PipelineEngine:
                 passed=passed, stage_results=stage_results,
                 skipped_stages=skipped_stages, failed_stage=failed_stage,
             )
+
+    async def resume(self) -> PipelineResult:
+        """Resume a previously interrupted pipeline from the last checkpoint.
+
+        Stub — raises NotImplementedError until fully implemented.
+        """
+        raise NotImplementedError("resume() not yet implemented")
