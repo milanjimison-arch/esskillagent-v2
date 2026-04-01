@@ -123,3 +123,20 @@
 **根因**：编排器在 spec/plan 阶段生成文件后会更新 CLAUDE.md 的索引，但重置时只清了文件没更新索引。
 
 **建议**：CLAUDE.md 的设计文档索引应标注为"由编排器自动生成"，或编排器重置时自动清理。
+
+---
+
+## R11. Agent 引入新依赖但未更新 requirements.txt
+
+**现象**：T003 GREEN 首次 CI 报 `ModuleNotFoundError: No module named 'aiosqlite'`，重试后 agent 自行修复。
+
+**根因**：Agent 写了 `import aiosqlite` 但没同步更新 `requirements.txt`。编排器在 commit 前无依赖一致性检查。
+
+**责任归属**：Agent 是直接责任（漏加依赖），编排器应兜底检查。
+
+**修复**：agent 重试时自行补上了 `aiosqlite>=0.20.0`。
+
+**建议**：
+- RED/GREEN prompt 增加约束："引入新第三方依赖时必须同时更新 requirements.txt"
+- 编排器在 `_commit_and_push` 前做轻量检查：扫描 diff 中的新 import，比对 requirements.txt + stdlib，发现缺失则 warning
+- 注意 import 名和 pip 名不一致的情况（如 `import yaml` → `pyyaml`）
