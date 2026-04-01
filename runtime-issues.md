@@ -140,3 +140,25 @@
 - RED/GREEN prompt 增加约束："引入新第三方依赖时必须同时更新 requirements.txt"
 - 编排器在 `_commit_and_push` 前做轻量检查：扫描 diff 中的新 import，比对 requirements.txt + stdlib，发现缺失则 warning
 - 注意 import 名和 pip 名不一致的情况（如 `import yaml` → `pyyaml`）
+
+---
+
+## R12. implement 阶段 stage_timeout 一刀切导致超时
+
+**现象**：T016 RED 阶段刚开始就触发 `[implement] XX timeout — 阶段超时 (3600s)`，整个 implement 阶段终止。
+
+**根因**：E+S 编排器用 `stage_timeout: 3600`（1 小时）覆盖整个 implement 阶段。20 个 task 串行执行，每个 task 的 RED+GREEN+CI 约 10-15 分钟，7 个 task 就用完了 1 小时。
+
+**对比 brownfield-orchestrator 的设计**：
+- brownfield 没有 `stage_timeout` 概念
+- 每个 agent 调用有独立的 `idle_timeout`（600s/10min）
+- CI 等待有独立的 `ci_timeout`（1800s/30min）
+- 只有 `global_timeout`（14400s/4h）做总兜底
+- 每个步骤独立超时，不因步骤数量多而累加超限
+
+**修复**：
+- implement 阶段取消 `stage_timeout`，改为每个 task 独立 timeout
+- 只保留 `global_timeout`（14400s）做总兜底
+- 参考 brownfield：idle_timeout（agent 调用）+ ci_timeout（CI 等待）+ global_timeout（总兜底）
+
+**建议**：v2 应采用 brownfield 的三层超时架构（idle_timeout / ci_timeout / global_timeout），而非 stage_timeout 一刀切。
