@@ -9,7 +9,13 @@ FR-TRACE-003: Output the traceability matrix as a structured report (JSON or Mar
 
 from __future__ import annotations
 
+import hashlib
+
 from orchestrator.stages.base import ReviewOutcome, StageABC, StageResult
+
+
+def _sha256_hex(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 # Sub-step names for the acceptance stage, in execution order.
 ACCEPTANCE_SUB_STEPS: tuple[str, ...] = ("verification", "traceability", "review")
@@ -117,21 +123,99 @@ class AcceptanceStage(StageABC):
     name: str = "acceptance"
     sub_steps: tuple[str, ...] = ACCEPTANCE_SUB_STEPS
 
-    def __init__(self, *, store: object | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        store: object | None = None,
+        acceptor_agent=None,
+        artifacts: dict[str, str] | None = None,
+        required_artifacts: list[str] | None = None,
+    ) -> None:
         self._store = store
         self.max_retries: int = 3
+        self.acceptor_agent = acceptor_agent
+        self.artifacts: dict[str, str] = artifacts if artifacts is not None else {}
+        self.required_artifacts: list[str] = required_artifacts if required_artifacts is not None else []
 
     async def run(self) -> StageResult:
         steps_executed: list[str] = list(self.sub_steps)
-        matrix = generate_traceability_matrix(frs=[], task_map={}, test_map={})
+        base_data: dict = {"stage_complete": "acceptance", "steps_executed": steps_executed}
+
+        # Stub mode: no acceptor agent
+        if self.acceptor_agent is None:
+            empty_matrix = generate_traceability_matrix(frs=[], task_map={}, test_map={})
+            return StageResult(
+                passed=True,
+                attempts=1,
+                data={
+                    **base_data,
+                    "traceability": empty_matrix.to_dict(),
+                    "unimplemented_frs": empty_matrix.unimplemented_frs(),
+                    "traceability_report": empty_matrix.to_markdown(),
+                },
+            )
+
+        # Validate required artifacts
+        if self.required_artifacts:
+            missing = [k for k in self.required_artifacts if k not in self.artifacts]
+            if missing:
+                return StageResult(
+                    passed=False,
+                    attempts=1,
+                    data=dict(base_data),
+                    error=f"Missing required artifacts: {', '.join(missing)}",
+                )
+
+        # Invoke acceptor agent
+        try:
+            agent_result = await self.acceptor_agent(self.artifacts)
+        except Exception as exc:
+            return StageResult(
+                passed=False,
+                attempts=1,
+                data=dict(base_data),
+                error=str(exc),
+            )
+
+        traceability: dict = agent_result.traceability or {}
+        review_passed: bool = agent_result.review_passed
+        review_issues = agent_result.review_issues
+
+        # Compute unimplemented FRs from traceability dict
+        unimplemented_frs = [
+            fr_id
+            for fr_id, entry in traceability.items()
+            if not entry.get("tasks") or not entry.get("tests")
+        ]
+
+        # Freeze artifacts with SHA-256 hashes
+        frozen_artifacts: dict[str, str] = {
+            name: _sha256_hex(content)
+            for name, content in self.artifacts.items()
+        }
+        # Also freeze the traceability report (as markdown from dict)
+        trace_lines = [_MARKDOWN_HEADER]
+        for fr_id, entry in traceability.items():
+            tasks_str = ", ".join(entry.get("tasks", []))
+            tests_str = ", ".join(entry.get("tests", []))
+            status = entry.get("status", "unimplemented")
+            trace_lines.append(f"| {fr_id} | {tasks_str} | {tests_str} | {status} |\n")
+        traceability_report = "".join(trace_lines)
+        frozen_artifacts["traceability_report"] = _sha256_hex(traceability_report)
+
+        passed = bool(agent_result.success) and bool(review_passed)
+
         return StageResult(
-            passed=True,
+            passed=passed,
             attempts=1,
             data={
-                "steps_executed": steps_executed,
-                "traceability": matrix.to_dict(),
-                "unimplemented_frs": matrix.unimplemented_frs(),
-                "traceability_report": matrix.to_markdown(),
+                **base_data,
+                "traceability": traceability,
+                "unimplemented_frs": unimplemented_frs,
+                "review_passed": review_passed,
+                "review_issues": review_issues,
+                "frozen_artifacts": frozen_artifacts,
+                "traceability_report": traceability_report,
             },
         )
 
