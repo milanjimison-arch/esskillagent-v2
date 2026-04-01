@@ -198,3 +198,47 @@
 - RED 验证改进：batch CI 失败后，解析 pytest 输出按测试文件归属 task，逐个判断是否 "valid RED"
 - GREEN 验证改进：batch CI 失败后，识别哪些 task 的测试通过了，只对失败的 task 重试 GREEN
 - 考虑每个 task 独立 CI（牺牲速度换精度），或通过 pytest `-k` 参数只跑单个 task 的测试子集
+
+---
+
+## R15. batch GREEN 不写 LVL 记录 — 证据链缺失
+
+**现象**：T005/T006（并行 batch）和 T010/T011（并行 batch）的 task 状态为 `completed`/`green_done`，LVL 表中只有 RED 记录，无 GREEN 记录。串行 task（T002-T004, T014-T016 等）都有完整的 GREEN lvl 记录。
+
+**根因**：`_run_parallel_group` 的 Phase B（GREEN）batch CI 通过后，直接 `mark_task_completed` 但没调用 `store.log_lvl()` 记录 GREEN 证据。串行模式的 `_run_tdd_task` 在 GREEN 通过后会写 lvl。
+
+**影响**：
+- 证据链不完整，无法追溯并行 task 的 GREEN 验证时间、commit SHA
+- 恢复运行时无法判断 GREEN 是否真的通过了（只能看 task status，不能看 lvl 证据）
+
+**建议**：`_run_parallel_group` Phase B 通过后，为每个 task 写入 GREEN lvl 记录，包含 batch commit 的 git_sha。
+
+---
+
+## R16. 手动修改 task 状态导致 LVL 与 status 矛盾
+
+**现象**：T001 的 LVL 记录为 `RED fail`（CI passed, not valid RED），但 task status 为 `completed`。
+
+**根因**：T001 的 RED 阶段 agent 同时写了测试和实现（R06），CI 通过被判定为无效 RED。后来人工分析代码正确，手动在 DB 中标记 `completed`，但没有补充 lvl 记录。
+
+**影响**：审计时 LVL 显示 T001 从未通过任何阶段，但 task 已 completed，矛盾。
+
+**建议**：
+- 手动修改 task 状态时应同时写入 lvl 记录（如 `manual_override` method）
+- 或编排器提供 `force-complete` 命令，自动补写 lvl + 更新 status
+
+---
+
+## R17. 重跑 task 的旧 LVL 记录未标记 superseded
+
+**现象**：T002 有两套 RED 记录 — 第一次运行（id=11, sha=69f59fbc）和第二次运行（id=15, sha=a0f13771），以及第一次运行的 3 条 GREEN 失败记录（id=12-14），全部 `superseded=0`。
+
+**根因**：编排器重置 task 状态后重跑，新的 RED/GREEN 记录追加到 LVL，但旧记录没有被标记为 `superseded=1`。
+
+**影响**：
+- 同一 task 有多条 RED pass 记录，查询"T002 的 RED 结果"会返回多条
+- 旧的 GREEN 失败记录（pyyaml 缺失）仍然活跃，污染统计
+
+**建议**：
+- task 重跑时，先将该 task 的所有旧 lvl 记录标记 `superseded=1`
+- 或在 `mark_task_running` 时自动 supersede 前序记录
