@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from orchestrator.store.db import Store
+from orchestrator.store.db import Store, _now
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +108,50 @@ class LvlLogRecord:
 
 
 # ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _row_to_task_record(row: dict) -> TaskRecord:
+    reqs = row.get("requirements") or []
+    return TaskRecord(
+        task_id=row["task_id"],
+        description=row["description"],
+        file_path=row["file_path"],
+        parallel=bool(row["parallel"]),
+        status=row["status"],
+        group_name=row["group_name"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        user_story=row.get("user_story"),
+        requirements=tuple(reqs),
+    )
+
+
+def _row_to_evidence_record(row: dict) -> EvidenceRecord:
+    return EvidenceRecord(
+        evidence_id=row["evidence_id"],
+        pipeline_id=row["pipeline_id"],
+        stage=row["stage"],
+        task_id=row.get("task_id"),
+        event_type=row["event_type"],
+        detail=row["detail"],
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_lvl_log_record(row: dict) -> LvlLogRecord:
+    return LvlLogRecord(
+        id=row["id"],
+        pipeline_id=row["pipeline_id"],
+        level=row["level"],
+        message=row["message"],
+        detail=row.get("detail"),
+        created_at=row["created_at"],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Task query helpers
 # ---------------------------------------------------------------------------
 
@@ -138,7 +182,22 @@ async def upsert_task_record(
     ValueError
         If task_id or description is empty.
     """
-    raise NotImplementedError
+    if not task_id:
+        raise ValueError("task_id must not be empty")
+    if not description:
+        raise ValueError("description must not be empty")
+    await store.upsert_task(
+        task_id=task_id,
+        description=description,
+        file_path=file_path,
+        parallel=parallel,
+        user_story=user_story,
+        requirements=requirements,
+        status=status,
+        group_name=group_name,
+    )
+    row = await store.get_task(task_id)
+    return _row_to_task_record(row)
 
 
 async def get_task_record(store: Store, task_id: str) -> TaskRecord | None:
@@ -151,7 +210,12 @@ async def get_task_record(store: Store, task_id: str) -> TaskRecord | None:
     ValueError
         If task_id is empty.
     """
-    raise NotImplementedError
+    if not task_id:
+        raise ValueError("task_id must not be empty")
+    row = await store.get_task(task_id)
+    if row is None:
+        return None
+    return _row_to_task_record(row)
 
 
 async def list_task_records(store: Store) -> tuple[TaskRecord, ...]:
@@ -159,7 +223,8 @@ async def list_task_records(store: Store) -> tuple[TaskRecord, ...]:
 
     Returns an empty tuple when no tasks are persisted.
     """
-    raise NotImplementedError
+    rows = await store.list_tasks()
+    return tuple(_row_to_task_record(row) for row in rows)
 
 
 async def update_task_status_record(
@@ -174,7 +239,16 @@ async def update_task_status_record(
     KeyError
         If no task with task_id exists.
     """
-    raise NotImplementedError
+    if not task_id:
+        raise ValueError("task_id must not be empty")
+    if not status:
+        raise ValueError("status must not be empty")
+    existing = await store.get_task(task_id)
+    if existing is None:
+        raise KeyError(f"No task with task_id={task_id!r}")
+    await store.update_task_status(task_id, status)
+    row = await store.get_task(task_id)
+    return _row_to_task_record(row)
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +274,27 @@ async def insert_evidence_record(
     ValueError
         If evidence_id, pipeline_id, stage, or event_type is empty.
     """
-    raise NotImplementedError
+    if not evidence_id:
+        raise ValueError("evidence_id must not be empty")
+    if not pipeline_id:
+        raise ValueError("pipeline_id must not be empty")
+    if not stage:
+        raise ValueError("stage must not be empty")
+    if not event_type:
+        raise ValueError("event_type must not be empty")
+    await store.insert_evidence(
+        evidence_id=evidence_id,
+        pipeline_id=pipeline_id,
+        stage=stage,
+        task_id=task_id,
+        event_type=event_type,
+        detail=detail,
+    )
+    async with store._conn.execute(
+        "SELECT * FROM evidence WHERE evidence_id = ?", (evidence_id,)
+    ) as cur:
+        row = await cur.fetchone()
+    return _row_to_evidence_record(dict(row))
 
 
 async def list_evidence_records(
@@ -215,7 +309,10 @@ async def list_evidence_records(
     ValueError
         If pipeline_id is empty.
     """
-    raise NotImplementedError
+    if not pipeline_id:
+        raise ValueError("pipeline_id must not be empty")
+    rows = await store.list_evidence(pipeline_id)
+    return tuple(_row_to_evidence_record(row) for row in rows)
 
 
 async def list_evidence_records_for_stage(
@@ -230,7 +327,16 @@ async def list_evidence_records_for_stage(
     ValueError
         If pipeline_id or stage is empty.
     """
-    raise NotImplementedError
+    if not pipeline_id:
+        raise ValueError("pipeline_id must not be empty")
+    if not stage:
+        raise ValueError("stage must not be empty")
+    async with store._conn.execute(
+        "SELECT * FROM evidence WHERE pipeline_id = ? AND stage = ?",
+        (pipeline_id, stage),
+    ) as cur:
+        rows = await cur.fetchall()
+    return tuple(_row_to_evidence_record(dict(row)) for row in rows)
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +360,25 @@ async def insert_lvl_log(
     ValueError
         If pipeline_id, level, or message is empty.
     """
-    raise NotImplementedError
+    if not pipeline_id:
+        raise ValueError("pipeline_id must not be empty")
+    if not level:
+        raise ValueError("level must not be empty")
+    if not message:
+        raise ValueError("message must not be empty")
+    now = _now()
+    async with store._conn.execute(
+        """INSERT INTO lvl (pipeline_id, level, message, detail, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (pipeline_id, level, message, detail, now),
+    ) as cur:
+        row_id = cur.lastrowid
+    await store._conn.commit()
+    async with store._conn.execute(
+        "SELECT * FROM lvl WHERE id = ?", (row_id,)
+    ) as cur:
+        row = await cur.fetchone()
+    return _row_to_lvl_log_record(dict(row))
 
 
 async def list_lvl_logs(
@@ -269,7 +393,14 @@ async def list_lvl_logs(
     ValueError
         If pipeline_id is empty.
     """
-    raise NotImplementedError
+    if not pipeline_id:
+        raise ValueError("pipeline_id must not be empty")
+    async with store._conn.execute(
+        "SELECT * FROM lvl WHERE pipeline_id = ? ORDER BY id ASC",
+        (pipeline_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return tuple(_row_to_lvl_log_record(dict(row)) for row in rows)
 
 
 async def list_lvl_logs_by_level(
@@ -284,4 +415,13 @@ async def list_lvl_logs_by_level(
     ValueError
         If pipeline_id or level is empty.
     """
-    raise NotImplementedError
+    if not pipeline_id:
+        raise ValueError("pipeline_id must not be empty")
+    if not level:
+        raise ValueError("level must not be empty")
+    async with store._conn.execute(
+        "SELECT * FROM lvl WHERE pipeline_id = ? AND level = ? ORDER BY id ASC",
+        (pipeline_id, level),
+    ) as cur:
+        rows = await cur.fetchall()
+    return tuple(_row_to_lvl_log_record(dict(row)) for row in rows)
