@@ -1,85 +1,13 @@
-"""Stage ABC stub.
+"""Stage ABC implementation.
 
 FR-004: Stage ABC with review gate enforcement, checkpoint persistence, and
 auto-fix retry loop.
 FR-002: Checkpoint persistence after stage completion.
-
-This is a minimal stub to prevent ImportError. All public classes and
-methods raise NotImplementedError. Tests will fail (RED) until the full
-implementation is provided.
 """
 
+from __future__ import annotations
+
 import abc
-
-
-class StageABC(abc.ABC):
-    """Abstract base class for all pipeline stages.
-
-    Concrete stages (spec, plan, implement, acceptance) must implement
-    run() and the review gate mechanism. The base class owns:
-    - review gate enforcement (stage must pass before being marked complete)
-    - checkpoint persistence (persisted after each successful completion)
-    - auto-fix retry loop (retry up to max_retries on review failure)
-    """
-
-    @abc.abstractmethod
-    async def run(self) -> "StageResult":
-        """Execute the stage and return a StageResult.
-
-        Raises:
-            NotImplementedError: Until implemented by a concrete subclass.
-        """
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    async def _do_review(self) -> "ReviewOutcome":
-        """Run the review gate for this stage.
-
-        Returns:
-            ReviewOutcome indicating pass or fail with details.
-
-        Raises:
-            NotImplementedError: Until implemented by a concrete subclass.
-        """
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    async def _do_fix(self, outcome: "ReviewOutcome") -> None:
-        """Apply auto-fix based on a failed review outcome.
-
-        Args:
-            outcome: The failed ReviewOutcome from _do_review.
-
-        Raises:
-            NotImplementedError: Until implemented by a concrete subclass.
-        """
-        raise NotImplementedError
-
-    async def execute_with_gate(self) -> "StageResult":
-        """Template method: run stage body, enforce review gate, persist checkpoint.
-
-        Implements the review gate loop:
-        1. Call run() to produce stage output.
-        2. Call _do_review() to evaluate the output.
-        3. If review passes, persist checkpoint and return success.
-        4. If review fails, call _do_fix() and retry up to max_retries.
-        5. If retries exhausted, return failure without checkpoint.
-
-        Returns:
-            StageResult with status, attempts used, and checkpoint data.
-        """
-        raise NotImplementedError
-
-    async def _persist_checkpoint(self, data: dict) -> None:
-        """Persist a checkpoint snapshot for this stage to the store.
-
-        Args:
-            data: Arbitrary JSON-serialisable dict to persist.
-
-        Raises:
-            NotImplementedError: Until implemented by a concrete subclass.
-        """
-        raise NotImplementedError
 
 
 class StageResult:
@@ -92,6 +20,8 @@ class StageResult:
         error:    Error message if the stage failed, else None.
     """
 
+    __slots__ = ("passed", "attempts", "data", "error")
+
     def __init__(
         self,
         passed: bool,
@@ -99,7 +29,16 @@ class StageResult:
         data: dict,
         error: str | None = None,
     ) -> None:
-        raise NotImplementedError
+        object.__setattr__(self, "passed", passed)
+        object.__setattr__(self, "attempts", attempts)
+        object.__setattr__(self, "data", data)
+        object.__setattr__(self, "error", error)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("StageResult is immutable")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("StageResult is immutable")
 
 
 class ReviewOutcome:
@@ -111,10 +50,67 @@ class ReviewOutcome:
         verdict:  String verdict label (e.g., "pass", "fail", "partial").
     """
 
+    __slots__ = ("passed", "issues", "verdict")
+
     def __init__(
         self,
         passed: bool,
         issues: tuple[str, ...],
         verdict: str,
     ) -> None:
+        object.__setattr__(self, "passed", passed)
+        object.__setattr__(self, "issues", issues)
+        object.__setattr__(self, "verdict", verdict)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("ReviewOutcome is immutable")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("ReviewOutcome is immutable")
+
+
+class StageABC(abc.ABC):
+    """Abstract base class for all pipeline stages."""
+
+    @abc.abstractmethod
+    async def run(self) -> StageResult:
+        """Execute the stage and return a StageResult."""
         raise NotImplementedError
+
+    @abc.abstractmethod
+    async def _do_review(self) -> ReviewOutcome:
+        """Run the review gate for this stage."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    async def _do_fix(self, outcome: ReviewOutcome) -> None:
+        """Apply auto-fix based on a failed review outcome."""
+        raise NotImplementedError
+
+    async def execute_with_gate(self) -> StageResult:
+        """Template method: run stage body, enforce review gate, persist checkpoint."""
+        run_result = await self.run()
+        data = run_result.data
+        attempts = 0
+
+        for i in range(self.max_retries + 1):  # type: ignore[attr-defined]
+            outcome = await self._do_review()
+            attempts += 1
+
+            if outcome.passed:
+                await self._persist_checkpoint(data)
+                return StageResult(passed=True, attempts=attempts, data=data, error=None)
+
+            if i < self.max_retries:  # type: ignore[attr-defined]
+                await self._do_fix(outcome)
+
+        return StageResult(
+            passed=False,
+            attempts=attempts,
+            data=data,
+            error="review gate failed: max retries exhausted",
+        )
+
+    async def _persist_checkpoint(self, data: dict) -> None:
+        """Persist a checkpoint snapshot for this stage to the store."""
+        self._store.save_checkpoint(data)  # type: ignore[attr-defined]
