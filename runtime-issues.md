@@ -276,6 +276,30 @@
 
 ---
 
+## R27. agents-src/ 知识文件无对应适配任务
+
+**现象**：T018 只改 `orchestrator/agents/registry.py`（注册代码），不改 `agents-src/` 下 14 个 agent 的知识文件。requirement-v2.md 的 A1-A10 agent 适配被压缩进了 registry 层面的 prompt 注入，实际 agent 行为模式（知识文件里的指令）没有 task 去修改。
+
+**影响**：
+- registry 注入 prompt 前缀只是"建议"，agent 自身知识文件的指令优先级更高
+- R06（tdd-guide RED 阶段写了实现）根因就是知识文件没有 RED 约束，仅靠 prompt 注入不可靠
+- R25（task-generator 用 `--` 而非 `—`）也是知识文件格式问题，已手动修复但不在 task 覆盖范围内
+- spec-writer 的 NC 标记、planner 的 NR 标记、acceptor 的结构化输出等都需要写进知识文件才能生效
+
+**涉及的 agent 知识文件**：
+- `agents-src/tdd-guide/`: RED-only 约束（A1）
+- `agents-src/spec-writer/`: NC 标记输出格式（A9）
+- `agents-src/planner/`: NR 标记输出格式（A10）
+- `agents-src/task-generator/`: FR 标签 + `--` 格式（A2，已手动修复）
+- `agents-src/fixer/`: 依赖感知 + 前次失败注入（A5）
+- `agents-src/acceptor/`: 结构化验收输出（A6）
+- `agents-src/implementer/`: GREEN-only 约束
+- `agents-src/code-reviewer/`, `security-reviewer/`, `brooks-reviewer/`: 结构化 verdict 格式
+
+**建议**：补充一个独立 task 专门适配 agents-src/ 知识文件，或在 T018 执行时同步修改知识文件而非仅改 registry。
+
+---
+
 ## R24. task-generator 的 [FR-###] 标签未覆盖所有 FR
 
 **现象**：plan 阶段 coverage 检查报 `tasks.md 未覆盖 15 个 FR`，但底部 FR Coverage Matrix 表格显示这些 FR 实际有对应 task。

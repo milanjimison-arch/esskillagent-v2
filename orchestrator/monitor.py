@@ -40,7 +40,7 @@ class PipelineMonitor:
         self._prev_done_count: int | None = None
         self._prev_blocked_count: int | None = None
 
-    def check(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def check(self, tasks: list[dict[str, Any]], stage: str = "") -> list[dict[str, Any]]:
         """Analyze tasks and return a list of observation dicts."""
         if not tasks:
             return []

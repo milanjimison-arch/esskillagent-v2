@@ -41,6 +41,8 @@ class PipelineResult:
     stage_results: dict[str, Any] = field(default_factory=dict)
     skipped_stages: list[str] = field(default_factory=list)
     failed_stage: str | None = None
+    paused: bool = False
+    monitor_observations: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -60,8 +62,6 @@ class StatusResult:
     task_counts: dict[str, int] = field(default_factory=dict)
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
-
-
 @dataclass(frozen=True)
 class PipelineEvent:
     """Immutable record of a single LVL event during a pipeline run."""
@@ -70,7 +70,6 @@ class PipelineEvent:
     payload: dict[str, Any]
     prev_event_id: str | None = None
     event_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
-
 
 
 class PipelineEngine:
@@ -84,6 +83,10 @@ class PipelineEngine:
         self._red_passed_tasks: set[str] = set()  # INV-3 tracking
         self._tasks: dict[str, str] = dict(config.get("tasks", {}))
         self._store: Any = None  # injected store for status() queries
+        self.monitor: Any = None  # FR-064: optional PipelineMonitor
+        self._skipped_blocked_tasks: list[str] = []  # FR-065: skipped BLOCKED task IDs
+        self._monitor_observations: list[dict[str, Any]] = []  # FR-064: collected observations
+        self._paused: bool = False  # FR-065: pause state
 
     def _check_preconditions(self, stage_name: str) -> bool:
         """Validate preconditions for a stage. Override in subclasses."""
@@ -94,137 +97,139 @@ class PipelineEngine:
         pass
 
     def _emit_event(self, event_type: str, stage: str, payload: dict) -> None:
-        """Emit an LVL event, enforcing INV-3 red_pass-before-green_start."""
-        # INV-3: green_start requires prior red_pass for the same task
+        """Emit LVL event, enforce INV-3 red_pass-before-green_start."""
         if event_type == "green_start":
             task_id = payload.get("task")
             if task_id not in self._red_passed_tasks:
-                raise ValueError(
-                    f"INV-3: green_start for task {task_id!r} without prior red_pass"
-                )
-        # Track red_pass for INV-3
+                raise ValueError(f"INV-3: green_start for task {task_id!r} without prior red_pass")
         if event_type == "red_pass":
             task_id = payload.get("task")
             if task_id is not None:
                 self._red_passed_tasks.add(task_id)
-
-        # INV-2: prior-event linkage
         prev_id = self._events[-1].event_id if self._events else None
-        evt = PipelineEvent(
+        self._events.append(PipelineEvent(
             event_type=event_type, stage=stage,
             payload=payload, prev_event_id=prev_id,
-        )
-        self._events.append(evt)
+        ))
+
+    def _build_task_list(self) -> list[dict[str, Any]]:
+        return [{"id": tid, "status": s} for tid, s in self._tasks.items()]
+
+    def _invoke_monitor(self, stage: str = "") -> list[dict[str, Any]]:
+        if not getattr(self, "monitor", None):
+            return []
+        obs = self.monitor.check(self._build_task_list(), stage=stage)
+        self._monitor_observations.extend(obs)
+        return obs
+
+    def _evaluate_blocked_status(self) -> bool:
+        """FR-065: Skip single BLOCKED task; pause when >50% BLOCKED."""
+        blocked_ids = [tid for tid, s in self._tasks.items() if s == "BLOCKED"]
+        total = len(self._tasks)
+        if total == 0 or not blocked_ids:
+            return False
+        if len(blocked_ids) == 1:
+            self._skipped_blocked_tasks.append(blocked_ids[0])
+            return False
+        if len(blocked_ids) / total > 0.5:
+            self._invoke_monitor(stage="blocked_evaluation")
+            self._paused = True
+            return True
+        return False
+
+    async def _run_non_blocked_tasks(self) -> None:
+        """FR-065: Execute TDD cycle for tasks that are not BLOCKED or skipped."""
+        skip_set = set(self._skipped_blocked_tasks)
+        for tid, status in list(self._tasks.items()):
+            if tid not in skip_set and status != "BLOCKED":
+                await self._run_single_task_tdd_cycle(tid)
 
     async def run(self) -> PipelineResult:
-        """Execute the pipeline with process lock, preconditions, artifact freezing, and events."""
-        async with self.lock:  # FR-059: process lock
-            skip_stages: list[str] = self._config.get("skip_stages", [])
+        """Execute all stages sequentially under process lock."""
+        async with self.lock:
+            if self._evaluate_blocked_status():
+                return PipelineResult(passed=False, paused=True,
+                    monitor_observations=self._monitor_observations or None)
+            if self._skipped_blocked_tasks:
+                await self._run_non_blocked_tasks()
+            skip_stages = self._config.get("skip_stages", [])
             stage_results: dict[str, Any] = {}
             skipped_stages: list[str] = []
             failed_stage: str | None = None
-
             for name in STAGE_NAMES:
                 if name in skip_stages:
                     skipped_stages.append(name)
                     continue
-
-                # INV-4: precondition validation
                 if not self._check_preconditions(name):
                     failed_stage = name
                     break
-
                 stage = self._stages[name]
                 if hasattr(stage, "lock"):
                     stage.lock = self.lock
-
                 result = await stage.execute_with_gate()
                 if inspect.iscoroutine(result):
                     result = await result
                 stage_results[name] = result
-
                 if result.passed is False:
                     failed_stage = name
                     break
-
-                # INV-1: emit stage_complete event for passing stages
                 self._emit_event("stage_complete", name, {"result": "passed"})
-                # Freeze artifacts for passing stages
                 self._freeze_stage_artifacts(name, result)
-
+                self._invoke_monitor(stage=name)
             passed = failed_stage is None
-            return PipelineResult(
-                passed=passed, stage_results=stage_results,
+            return PipelineResult(passed=passed, stage_results=stage_results,
                 skipped_stages=skipped_stages, failed_stage=failed_stage,
-            )
+                paused=self._paused,
+                monitor_observations=self._monitor_observations or None)
 
     def _load_checkpoint(self) -> dict | None:
         """Load the last checkpoint. Returns None if no checkpoint exists."""
         return None
 
     async def resume(self) -> PipelineResult:
-        """Resume a previously interrupted pipeline from the last checkpoint."""
+        """Resume from the last checkpoint."""
         async with self.lock:
             checkpoint = self._load_checkpoint()
             if checkpoint is None:
                 raise NoCheckpointError("no checkpoint found")
-
             cp_stage = checkpoint["stage"]
-
-            # FR-resume-5: acceptance already complete → nothing to re-run
             if cp_stage == "acceptance" and checkpoint.get("completed"):
                 return PipelineResult(passed=True)
-
             cp_stage_idx = STAGE_NAMES.index(cp_stage)
-
-            # FR-resume-2: configure implement stage resume point
             if cp_stage == "implement":
                 last_idx = checkpoint.get("last_completed_task_index", -1)
                 self._stages["implement"].resume_from_task = last_idx + 1
-
-            skip_stages: list[str] = self._config.get("skip_stages", [])
+            skip_stages = self._config.get("skip_stages", [])
             stage_results: dict[str, Any] = {}
             skipped_stages: list[str] = []
             failed_stage: str | None = None
-
             for name in STAGE_NAMES:
                 if name in skip_stages:
                     skipped_stages.append(name)
                     continue
-
-                # Determine if this stage should run during resume:
-                # - Atomic stages always re-run from start
-                # - The checkpoint stage and all stages after it run
-                # - Non-atomic stages before the checkpoint stage are skipped
-                stage_idx = STAGE_NAMES.index(name)
-                if name not in ATOMIC_STAGES and stage_idx < cp_stage_idx:
+                if name not in ATOMIC_STAGES and STAGE_NAMES.index(name) < cp_stage_idx:
                     continue
-
                 if not self._check_preconditions(name):
                     failed_stage = name
                     break
-
                 stage = self._stages[name]
                 if hasattr(stage, "lock"):
                     stage.lock = self.lock
-
                 result = await stage.execute_with_gate()
                 if inspect.iscoroutine(result):
                     result = await result
                 stage_results[name] = result
-
                 if result.passed is False:
                     failed_stage = name
                     break
-
                 self._emit_event("stage_complete", name, {"result": "passed"})
                 self._freeze_stage_artifacts(name, result)
-
+                self._invoke_monitor(stage=name)
             passed = failed_stage is None
-            return PipelineResult(
-                passed=passed, stage_results=stage_results,
+            return PipelineResult(passed=passed, stage_results=stage_results,
                 skipped_stages=skipped_stages, failed_stage=failed_stage,
-            )
+                paused=self._paused,
+                monitor_observations=self._monitor_observations or None)
 
     def _get_task_status(self, task_id: str) -> str | None:
         """Return the status string for task_id, or None if not found."""
