@@ -44,11 +44,6 @@ class PipelineResult:
     failed_stage: str | None = None
 
 
-# ---------------------------------------------------------------------------
-# RetryResult — frozen dataclass for the result of a single-task retry
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class RetryResult:
     """Immutable result of a single-task retry cycle (RED → GREEN → review)."""
@@ -56,6 +51,17 @@ class RetryResult:
     task_id: str = ""
     passed: bool = False
     phases: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class StatusResult:
+    """Immutable snapshot of current pipeline status. Stub — not implemented."""
+
+    pipeline_id: str | None = None
+    active: bool = False
+    stage_completions: dict[str, bool] = field(default_factory=dict)
+    task_counts: dict[str, int] = field(default_factory=dict)
+    warnings: tuple[str, ...] = field(default_factory=tuple)
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +95,7 @@ class PipelineEngine:
         self._events: list[PipelineEvent] = []  # INV-1/INV-2 event log
         self._red_passed_tasks: set[str] = set()  # INV-3 tracking
         self._tasks: dict[str, str] = dict(config.get("tasks", {}))
+        self._store: Any = None  # injected store for status() queries
 
     def _check_preconditions(self, stage_name: str) -> bool:
         """Validate preconditions for a stage. Override in subclasses."""
@@ -278,3 +285,7 @@ class PipelineEngine:
                 passed=cycle.passed,
                 phases=getattr(cycle, "phases", ()),
             )
+
+    async def status(self) -> StatusResult:
+        """Return current pipeline status. Stub — returns empty default (not implemented)."""
+        return StatusResult()
