@@ -1,0 +1,12 @@
+.workflow/
+.pytest_cache/
+__pycache__/
+*.pyc
+.coverage
+htmlcov/
+.env
+venv/
+.venv/
+node_modules/
+dist/
+build/
