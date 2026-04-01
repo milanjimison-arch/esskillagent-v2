@@ -51,7 +51,7 @@ python -m pytest tests/ -v
 
 - `reference/python-patterns.md` — Python 编码模式（类型标注、错误处理、不可变数据、函数式风格等）
 - `reference/python-testing.md` — Python 测试规范（pytest、fixture、mock、覆盖率等）
-- `pitfalls.md` — v1 编排器的 20 条踩坑记录（必读，避免重复犯错）
+- `pitfalls.md` — v1 编排器的 26 条踩坑记录（必读，避免重复犯错）
 
 关键约束：
 - 每个模块 < 400 行
@@ -64,10 +64,4 @@ python -m pytest tests/ -v
 
 ## 设计文档索引
 
-- [requirements.md](specs\checklists\requirements.md)
-- [constitution.md](specs\constitution.md)
-- [data-model.md](specs\data-model.md)
-- [plan.md](specs\plan.md)
-- [quickstart.md](specs\quickstart.md)
-- [spec.md](specs\spec.md)
-- [tasks.md](specs\tasks.md)
+（由编排器 spec/plan 阶段自动生成到 `specs/` 目录）
