@@ -282,8 +282,51 @@
 
 **根因**：审查修复阶段调用 `_commit_and_push` 时传入的 `cfg` 没有 `task_id` 字段，`cfg.get("task_id", "unknown")` 回退到默认值。该阶段不是某个 task 的 RED/GREEN，而是整体审查后的修复提交。
 
+**深层分析**：`_commit_and_push` 被三个场景复用，但 commit 消息模板只有一种：
+
+| 场景 | 应该的 commit 消息 | 实际 |
+|------|-------------------|------|
+| task GREEN | `green(T001): implement to pass` | ✅ 正确 |
+| 审查后 CI 验证 | `ci-check: post-review verification` | ❌ `green(unknown): implement to pass` |
+| fixer 修复 | `fix(review): resolve H1 M3 issues` | ⚠️ agent 输出被直接当作消息，过长且非标准格式 |
+
+`ci_tests_must_pass` 硬编码了 `green({task_id}): implement to pass` 消息模板。审查修复流程复用了该函数但传入的 cfg 没有 task_id 也没有自定义消息。fixer 的 commit 消息则是 `review_pipeline` 直接把 agent 输出文本塞进了 commit message（如 `fix(review): 所有审查问题已修复完成以下是变更摘要`）。
+
 **影响**：
-- git history 无法追溯该提交对应的操作阶段
+- git history 无法追溯提交对应的操作阶段
+- fixer 的 commit 消息过长且包含非结构化中文，污染 git log
 - CI 日志中 commit 标题无意义
 
-**建议**：审查修复阶段的 commit 消息应使用 `"review_fix"` 或 `"auto_fix_attempt_N"` 替代 `"unknown"`。
+**建议**：
+- `_commit_and_push` 接受 `msg` 参数由调用者控制，不在 `ci_tests_must_pass` 内硬编码
+- 审查 CI 验证用 `ci-check: post-review verification`
+- fixer 修复用 `fix(review-attempt-N): resolve {severity_summary}`，不用 agent 原始输出
+- commit 消息强制 < 72 字符，超出截断
+
+---
+
+## R21. review_pipeline severity 解析丢失 HIGH/MEDIUM 计数
+
+**现象**：code-reviewer 的审查报告（`code_review.txt`）实际包含 H:2 M:3 L:2，但日志显示 `NEEDS_WORK (C:0 H:0 M:0 L:2)`，HIGH 和 MEDIUM 被完全丢失。
+
+**对比**：
+
+| 来源 | C | H | M | L |
+|------|---|---|---|---|
+| 日志（两轮均相同） | 0 | 0 | 0 | 2 |
+| `code_review_r1.txt` | 0 | **2** | **3** | 2 |
+| `code_review.txt` | 0 | **2** | **3** | 2 |
+
+brooks-reviewer 的解析是正确的（Round 1: H:1 M:3 → Round 2: H:1 M:2，fixer 修了一个 MEDIUM）。
+
+**根因**：`review_pipeline` 解析 agent 输出中的 severity 表格时，正则匹配只捕获到了 LOW 行的计数，HIGH 和 MEDIUM 行被跳过。可能是 agent 输出的表格格式（如 `**HIGH**` 加粗标记）与 pipeline 的正则不匹配。
+
+**影响**：
+- 编排器严重低估代码问题 — 2 个 HIGH 问题被当作 0 个
+- fixer 可能未收到正确的修复优先级（不知道有 HIGH 需要修）
+- 自动修复判断逻辑可能因计数错误而做出错误决策（如 "只有 LOW，不需要修复"）
+
+**建议**：
+- 审查报告应使用结构化输出（如 JSON verdict），而非从 markdown 表格正则解析
+- 至少修复正则以兼容 `**HIGH**` 等加粗格式
+- 添加校验：解析出的 severity 总数应等于报告中 findings 数量，不等则 warning

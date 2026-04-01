@@ -31,11 +31,6 @@ from orchestrator.store._schema import _DDL
 _SCHEMA_VERSION = 2
 
 
-def _now() -> str:
-    """Return current UTC time as ISO 8601 string."""
-    return now()
-
-
 def now() -> str:
     """Return current UTC time as ISO 8601 string."""
     return datetime.now(timezone.utc).isoformat()
@@ -59,9 +54,9 @@ class Store:
         """Open connection, enable WAL, create schema, set schema version."""
         self._conn = await aiosqlite.connect(self.db_path)
         self._conn.row_factory = aiosqlite.Row
-        await self._conn.execute("PRAGMA journal_mode=WAL")
+        await self.execute("PRAGMA journal_mode=WAL")
         await self._conn.executescript(_DDL)
-        await self._conn.commit()
+        await self.commit()
         version_val = await self.get_setting("schema_version")
         if version_val is None:
             await self.set_setting("schema_version", str(_SCHEMA_VERSION))
@@ -75,12 +70,16 @@ class Store:
     def is_open(self) -> bool:
         return self._conn is not None
 
-    def execute(self, sql: str, params: Any = ()) -> Any:
+    def execute(self, sql: str, params: Any = ()) -> "aiosqlite.cursor.CursorIterator[aiosqlite.Row]":
         """Execute a SQL statement and return the cursor context manager."""
+        if self._conn is None:
+            raise RuntimeError("Store is not initialized")
         return self._conn.execute(sql, params)
 
     async def commit(self) -> None:
         """Commit the current transaction."""
+        if self._conn is None:
+            raise RuntimeError("Store is not initialized")
         await self._conn.commit()
 
     # ------------------------------------------------------------------ #
@@ -95,8 +94,8 @@ class Store:
         current_stage: str,
         status: str,
     ) -> None:
-        now = _now()
-        await self._conn.execute(
+        ts = now()
+        await self.execute(
             """INSERT INTO pipelines
                (pipeline_id, project_path, requirement_path, current_stage, status, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -106,12 +105,12 @@ class Store:
                  current_stage=excluded.current_stage,
                  status=excluded.status,
                  updated_at=excluded.updated_at""",
-            (pipeline_id, project_path, requirement_path, current_stage, status, now, now),
+            (pipeline_id, project_path, requirement_path, current_stage, status, ts, ts),
         )
-        await self._conn.commit()
+        await self.commit()
 
     async def get_pipeline(self, pipeline_id: str) -> dict | None:
-        async with self._conn.execute(
+        async with self.execute(
             "SELECT * FROM pipelines WHERE pipeline_id = ?", (pipeline_id,)
         ) as cur:
             row = await cur.fetchone()
@@ -132,21 +131,21 @@ class Store:
         status: str,
         group_name: str,
     ) -> None:
-        now = _now()
+        ts = now()
         reqs_json = json.dumps(requirements)
         parallel_int = int(bool(parallel))
-        await self._conn.execute(
+        await self.execute(
             """INSERT OR REPLACE INTO tasks
                (task_id, description, file_path, parallel, user_story, requirements,
                 status, group_name, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (task_id, description, file_path, parallel_int, user_story,
-             reqs_json, status, group_name, now, now),
+             reqs_json, status, group_name, ts, ts),
         )
-        await self._conn.commit()
+        await self.commit()
 
     async def get_task(self, task_id: str) -> dict | None:
-        async with self._conn.execute(
+        async with self.execute(
             "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
         ) as cur:
             row = await cur.fetchone()
@@ -157,7 +156,7 @@ class Store:
         return result
 
     async def list_tasks(self) -> list[dict]:
-        async with self._conn.execute("SELECT * FROM tasks") as cur:
+        async with self.execute("SELECT * FROM tasks") as cur:
             rows = await cur.fetchall()
         result = []
         for row in rows:
@@ -167,12 +166,12 @@ class Store:
         return result
 
     async def update_task_status(self, task_id: str, status: str) -> None:
-        now = _now()
-        await self._conn.execute(
+        ts = now()
+        await self.execute(
             "UPDATE tasks SET status = ?, updated_at = ? WHERE task_id = ?",
-            (status, now, task_id),
+            (status, ts, task_id),
         )
-        await self._conn.commit()
+        await self.commit()
 
     # ------------------------------------------------------------------ #
     # stage_progress                                                       #
@@ -188,7 +187,7 @@ class Store:
         review_attempts: int = 0,
         checkpoint_data: str | None = None,
     ) -> None:
-        await self._conn.execute(
+        await self.execute(
             """INSERT OR REPLACE INTO stage_progress
                (pipeline_id, stage, status, started_at, completed_at,
                 review_attempts, checkpoint_data)
@@ -196,10 +195,10 @@ class Store:
             (pipeline_id, stage, status, started_at, completed_at,
              review_attempts, checkpoint_data),
         )
-        await self._conn.commit()
+        await self.commit()
 
     async def get_stage_progress(self, pipeline_id: str, stage: str) -> dict | None:
-        async with self._conn.execute(
+        async with self.execute(
             "SELECT * FROM stage_progress WHERE pipeline_id = ? AND stage = ?",
             (pipeline_id, stage),
         ) as cur:
@@ -217,17 +216,17 @@ class Store:
         step: str,
         state_json: str,
     ) -> None:
-        now = _now()
-        await self._conn.execute(
+        ts = now()
+        await self.execute(
             """INSERT OR REPLACE INTO checkpoints
                (pipeline_id, stage, step, state_json, created_at)
                VALUES (?, ?, ?, ?, ?)""",
-            (pipeline_id, stage, step, state_json, now),
+            (pipeline_id, stage, step, state_json, ts),
         )
-        await self._conn.commit()
+        await self.commit()
 
     async def load_checkpoint(self, pipeline_id: str, stage: str, step: str) -> dict | None:
-        async with self._conn.execute(
+        async with self.execute(
             "SELECT * FROM checkpoints WHERE pipeline_id = ? AND stage = ? AND step = ?",
             (pipeline_id, stage, step),
         ) as cur:
@@ -247,19 +246,19 @@ class Store:
         findings: list[str],
         raw_output: str,
     ) -> None:
-        now = _now()
+        ts = now()
         passed_int = int(bool(passed))
         findings_json = json.dumps(findings)
-        await self._conn.execute(
+        await self.execute(
             """INSERT INTO reviews
                (review_id, task_id, review_type, passed, findings, raw_output, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (review_id, task_id, review_type, passed_int, findings_json, raw_output, now),
+            (review_id, task_id, review_type, passed_int, findings_json, raw_output, ts),
         )
-        await self._conn.commit()
+        await self.commit()
 
     async def get_reviews_for_task(self, task_id: str) -> list[dict]:
-        async with self._conn.execute(
+        async with self.execute(
             "SELECT * FROM reviews WHERE task_id = ?", (task_id,)
         ) as cur:
             rows = await cur.fetchall()
@@ -283,17 +282,17 @@ class Store:
         event_type: str,
         detail: str,
     ) -> None:
-        now = _now()
-        await self._conn.execute(
+        ts = now()
+        await self.execute(
             """INSERT INTO evidence
                (evidence_id, pipeline_id, stage, task_id, event_type, detail, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (evidence_id, pipeline_id, stage, task_id, event_type, detail, now),
+            (evidence_id, pipeline_id, stage, task_id, event_type, detail, ts),
         )
-        await self._conn.commit()
+        await self.commit()
 
     async def list_evidence(self, pipeline_id: str) -> list[dict]:
-        async with self._conn.execute(
+        async with self.execute(
             "SELECT * FROM evidence WHERE pipeline_id = ?", (pipeline_id,)
         ) as cur:
             rows = await cur.fetchall()
@@ -304,16 +303,16 @@ class Store:
     # ------------------------------------------------------------------ #
 
     async def set_setting(self, key: str, value: str) -> None:
-        now = _now()
-        await self._conn.execute(
+        ts = now()
+        await self.execute(
             """INSERT OR REPLACE INTO settings (key, value, updated_at)
                VALUES (?, ?, ?)""",
-            (key, value, now),
+            (key, value, ts),
         )
-        await self._conn.commit()
+        await self.commit()
 
     async def get_setting(self, key: str) -> str | None:
-        async with self._conn.execute(
+        async with self.execute(
             "SELECT value FROM settings WHERE key = ?", (key,)
         ) as cur:
             row = await cur.fetchone()
@@ -324,16 +323,16 @@ class Store:
     # ------------------------------------------------------------------ #
 
     async def cache_config(self, pipeline_id: str, config_json: str) -> None:
-        now = _now()
-        await self._conn.execute(
+        ts = now()
+        await self.execute(
             """INSERT OR REPLACE INTO config_cache (pipeline_id, config_json, created_at)
                VALUES (?, ?, ?)""",
-            (pipeline_id, config_json, now),
+            (pipeline_id, config_json, ts),
         )
-        await self._conn.commit()
+        await self.commit()
 
     async def load_cached_config(self, pipeline_id: str) -> str | None:
-        async with self._conn.execute(
+        async with self.execute(
             "SELECT config_json FROM config_cache WHERE pipeline_id = ?",
             (pipeline_id,),
         ) as cur:

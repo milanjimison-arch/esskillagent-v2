@@ -7,6 +7,7 @@ FR-043: Catch FileNotFoundError and subprocess.TimeoutExpired.
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 import time
 
@@ -69,8 +70,8 @@ class LocalCheckStrategy(CheckStrategy):
         for attempt in range(total_attempts):
             try:
                 proc = subprocess.run(
-                    command,
-                    shell=True,
+                    shlex.split(command),
+                    shell=False,
                     capture_output=True,
                     text=True,
                 )
@@ -116,8 +117,8 @@ class LocalCheckStrategy(CheckStrategy):
         """
         try:
             proc = subprocess.run(
-                command,
-                shell=True,
+                shlex.split(command),
+                shell=False,
                 capture_output=True,
                 text=True,
             )

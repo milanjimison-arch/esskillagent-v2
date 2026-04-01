@@ -146,6 +146,20 @@ def group_tasks(tasks: list[Task]) -> TaskGroup:
     return group
 
 
+def _validate_description(description: str) -> None:
+    """Raise ValueError if description contains invalid separator sequences."""
+    separator = f" {EM} "
+    if separator in description:
+        raise ValueError(
+            f"description must not contain the em-dash separator {separator!r}, "
+            f"got: {description!r}"
+        )
+    if " - " in description:
+        raise ValueError(
+            f"description must not contain ' - ', got: {description!r}"
+        )
+
+
 def format_task_line(task: Task) -> str:
     """Serialize a Task back into the em-dash line format expected by parse_line.
 
@@ -153,8 +167,9 @@ def format_task_line(task: Task) -> str:
     or:     ``{task_id} — [{tag}] {description} — {file_path}``
 
     Raises:
-        ValueError: if task_id <= 0, description is empty, or description
-                    contains the em-dash separator sequence ' — '.
+        ValueError: if task_id <= 0, description is empty, description
+                    contains the em-dash separator sequence ' — ', or a
+                    tag that requires file_path (S or US*) has none.
     """
     if task.task_id <= 0:
         raise ValueError(
@@ -166,21 +181,16 @@ def format_task_line(task: Task) -> str:
     if not description:
         raise ValueError("description must not be empty or whitespace-only")
 
-    separator = f" {EM} "
-    if separator in description:
-        raise ValueError(
-            f"description must not contain the em-dash separator {separator!r}, "
-            f"got: {description!r}"
-        )
+    _validate_description(description)
 
     if not _VALID_TAG.match(task.tag):
         raise ValueError(
             f"Invalid tag: {task.tag!r}. Must be S, P, or US<digits>"
         )
 
-    if " - " in description:
+    if task.tag != "P" and task.file_path is None:
         raise ValueError(
-            f"description must not contain ' - ', got: {description!r}"
+            f"Tag [{task.tag}] requires a file_path, but none was provided"
         )
 
     tag_segment = f"[{task.tag}] {description}"
