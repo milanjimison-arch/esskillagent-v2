@@ -35,6 +35,24 @@ class NoCheckpointError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# TaskNotFoundError — raised when retry() is called with an unknown task_id
+# ---------------------------------------------------------------------------
+
+
+class TaskNotFoundError(Exception):
+    """Raised when retry() is called with a task_id that does not exist."""
+
+
+# ---------------------------------------------------------------------------
+# TaskNotRetryableError — raised when retry() is called for a non-BLOCKED task
+# ---------------------------------------------------------------------------
+
+
+class TaskNotRetryableError(Exception):
+    """Raised when retry() is called for a task that is not in BLOCKED status."""
+
+
+# ---------------------------------------------------------------------------
 # PipelineResult — frozen dataclass (immutable DTO)
 # ---------------------------------------------------------------------------
 
@@ -47,6 +65,23 @@ class PipelineResult:
     stage_results: dict[str, Any] = field(default_factory=dict)
     skipped_stages: list[str] = field(default_factory=list)
     failed_stage: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# RetryResult — frozen dataclass for the result of a single-task retry
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RetryResult:
+    """Immutable result of a single-task retry cycle (RED → GREEN → review).
+
+    Stub only — implementation logic is not yet provided.
+    """
+
+    task_id: str = ""
+    passed: bool = False
+    phases: tuple[str, ...] = field(default_factory=tuple)
 
 
 # ---------------------------------------------------------------------------
@@ -220,3 +255,24 @@ class PipelineEngine:
                 passed=passed, stage_results=stage_results,
                 skipped_stages=skipped_stages, failed_stage=failed_stage,
             )
+
+    def _get_task_status(self, task_id: str) -> str | None:
+        """Return the status string for task_id, or None if not found.
+
+        Stub only — not yet implemented.
+        """
+        raise NotImplementedError("_get_task_status is not yet implemented")
+
+    async def retry(self, task_id: str) -> RetryResult:
+        """Re-execute a single TDD cycle (RED, GREEN, review) for a BLOCKED task.
+
+        Raises
+        ------
+        TaskNotFoundError
+            If task_id does not exist in this engine's task registry.
+        TaskNotRetryableError
+            If the task exists but is not in BLOCKED status (e.g. DONE, RUNNING).
+
+        Stub only — not yet implemented.
+        """
+        raise NotImplementedError("retry() is not yet implemented")
