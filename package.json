@@ -1,0 +1,9 @@
+{
+  "name": "esskillagent-v2",
+  "version": "2.0.0",
+  "description": "E+S Orchestrator v2 - Python TDD orchestrator",
+  "scripts": {
+    "test": "pytest tests/ -v --tb=short",
+    "test:coverage": "pytest tests/ -v --tb=short --cov=orchestrator --cov-report=term-missing --cov-fail-under=80"
+  }
+}

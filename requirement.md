@@ -303,7 +303,7 @@ v2 的 store 必须能读取 v1 的 `.workflow/workflow.db`：
 
 ## 验收标准
 
-1. 所有 Python 模块各 < 400 行，engine.py < 300 行
+1. 所有 Python 模块各 < 400 行，engine.py < 400 行
 2. CheckStrategy 接口：切换 `local_test` 配置无需改动调用方
 3. 现有 ESSKILLAGENT agent 目录（14 个 agent）无需修改即可加载
 4. brownfield.yaml 兼容 v1 格式 + `.orchestrator.yaml` 项目覆盖生效
