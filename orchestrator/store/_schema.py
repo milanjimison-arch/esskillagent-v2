@@ -1,8 +1,8 @@
-"""DDL schema string for E+S Orchestrator v2 SQLite database."""
+"""DDL schema string for E+S Orchestrator v3 SQLite database."""
 
 from dataclasses import dataclass
 
-SCHEMA_VERSION = 2  # stub: tests expect 3
+SCHEMA_VERSION = 3
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -104,18 +104,74 @@ CREATE TABLE IF NOT EXISTS task_groups (
     sort_order INTEGER NOT NULL,
     task_count INTEGER DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    id           TEXT PRIMARY KEY,
+    run_id       TEXT NOT NULL,
+    stage        TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    blob         BLOB,
+    created_ts   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_run_id ON artifacts(run_id);
+
+CREATE TABLE IF NOT EXISTS lvl_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id     TEXT NOT NULL,
+    stage      TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload    TEXT,
+    ts         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lvl_events_run_id ON lvl_events(run_id);
+
+CREATE TABLE IF NOT EXISTS pipeline_lvl_events (
+    event_id TEXT PRIMARY KEY,
+    pipeline_id TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    prev_hash TEXT,
+    event_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_artifacts (
+    artifact_id TEXT PRIMARY KEY,
+    pipeline_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    frozen_hash TEXT,
+    is_frozen INTEGER DEFAULT 0,
+    is_valid INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL,
+    UNIQUE(pipeline_id, name)
+);
 """
 
 
 @dataclass(frozen=True)
 class ArtifactRecord:
-    """Stub: fields are intentionally wrong — tests will fail on field assertions."""
+    """Immutable data record matching the artifacts table columns."""
 
     id: str = ""
+    run_id: str = ""
+    stage: str = ""
+    kind: str = ""
+    content_hash: str = ""
+    blob: bytes | None = None
+    created_ts: str = ""
 
 
 @dataclass(frozen=True)
 class LvlEventRecord:
-    """Stub: fields are intentionally wrong — tests will fail on field assertions."""
+    """Immutable data record matching the lvl_events table columns."""
 
     id: int = 0
+    run_id: str = ""
+    stage: str = ""
+    event_type: str = ""
+    payload: str | None = None
+    ts: str = ""
