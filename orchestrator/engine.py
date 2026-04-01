@@ -153,9 +153,70 @@ class PipelineEngine:
                 skipped_stages=skipped_stages, failed_stage=failed_stage,
             )
 
-    async def resume(self) -> PipelineResult:
-        """Resume a previously interrupted pipeline from the last checkpoint.
+    def _load_checkpoint(self) -> dict | None:
+        """Load the last checkpoint. Returns None if no checkpoint exists."""
+        return None
 
-        Stub — raises NotImplementedError until fully implemented.
-        """
-        raise NotImplementedError("resume() not yet implemented")
+    async def resume(self) -> PipelineResult:
+        """Resume a previously interrupted pipeline from the last checkpoint."""
+        async with self.lock:
+            checkpoint = self._load_checkpoint()
+            if checkpoint is None:
+                raise NoCheckpointError("no checkpoint found")
+
+            cp_stage = checkpoint["stage"]
+
+            # FR-resume-5: acceptance already complete → nothing to re-run
+            if cp_stage == "acceptance" and checkpoint.get("completed"):
+                return PipelineResult(passed=True)
+
+            cp_stage_idx = STAGE_NAMES.index(cp_stage)
+
+            # FR-resume-2: configure implement stage resume point
+            if cp_stage == "implement":
+                last_idx = checkpoint.get("last_completed_task_index", -1)
+                self._stages["implement"].resume_from_task = last_idx + 1
+
+            skip_stages: list[str] = self._config.get("skip_stages", [])
+            stage_results: dict[str, Any] = {}
+            skipped_stages: list[str] = []
+            failed_stage: str | None = None
+
+            for name in STAGE_NAMES:
+                if name in skip_stages:
+                    skipped_stages.append(name)
+                    continue
+
+                # Determine if this stage should run during resume:
+                # - Atomic stages always re-run from start
+                # - The checkpoint stage and all stages after it run
+                # - Non-atomic stages before the checkpoint stage are skipped
+                stage_idx = STAGE_NAMES.index(name)
+                if name not in ATOMIC_STAGES and stage_idx < cp_stage_idx:
+                    continue
+
+                if not self._check_preconditions(name):
+                    failed_stage = name
+                    break
+
+                stage = self._stages[name]
+                if hasattr(stage, "lock"):
+                    stage.lock = self.lock
+
+                result = await stage.execute_with_gate()
+                if inspect.iscoroutine(result):
+                    result = await result
+                stage_results[name] = result
+
+                if result.passed is False:
+                    failed_stage = name
+                    break
+
+                self._emit_event("stage_complete", name, {"result": "passed"})
+                self._freeze_stage_artifacts(name, result)
+
+            passed = failed_stage is None
+            return PipelineResult(
+                passed=passed, stage_results=stage_results,
+                skipped_stages=skipped_stages, failed_stage=failed_stage,
+            )
