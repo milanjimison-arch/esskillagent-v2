@@ -162,3 +162,22 @@
 - 参考 brownfield：idle_timeout（agent 调用）+ ci_timeout（CI 等待）+ global_timeout（总兜底）
 
 **建议**：v2 应采用 brownfield 的三层超时架构（idle_timeout / ci_timeout / global_timeout），而非 stage_timeout 一刀切。
+
+---
+
+## R13. 并行利用率低 — 大部分 task 实际串行执行
+
+**现象**：20 个 task 中只有 6 个标记 `parallel=1`，且分散在不同 story_ref 组中。实际能并行的只有 US3（T010+T011）和 polish（T018+T019）两组各 2 个 task，其余全部串行。
+
+**根因**：
+1. **plan agent 标记保守**：US2 的 3 个 task（parser/validator/runner）虽然文件不重叠，但 agent 判断有逻辑依赖，标为串行。合理但偏保守。
+2. **并行组被 story_ref 割裂**：T012(US8) 和 T013(US9) 各自 `parallel=1` 但组内只有 1 个 task，并行标记无意义。跨 story_ref 组不能并行。
+3. **CI 串行瓶颈**：即使 agent 并行写代码，CI 验证仍是 batch commit → 等一次 CI。每次 CI 等待 3-5 分钟，串行 20 个 task 仅 CI 等待就需要 2+ 小时。
+
+**影响**：20 个 task 全程约 3-4 小时，其中大部分时间在等 CI。
+
+**建议**：
+- plan agent 的 tasks prompt 应引导更多并行：文件不重叠的 task 默认标 `[P]`，仅有显式 import 依赖时才串行
+- 允许跨 story_ref 并行：同一 implement 阶段内，不同 US 组的 `[P]` task 若文件不重叠可以合并为一个并行 batch
+- 考虑 RED 和 GREEN 合并 CI：多个 task 的 RED 测试一次性 batch commit，一次 CI 验证所有 RED，减少 CI 调用次数
+- 极端优化：本地 pytest 预检（秒级）+ CI 仅做最终验证，减少 CI 往返
