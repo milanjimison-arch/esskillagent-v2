@@ -173,6 +173,16 @@ def format_task_line(task: Task) -> str:
             f"got: {description!r}"
         )
 
+    if not _VALID_TAG.match(task.tag):
+        raise ValueError(
+            f"Invalid tag: {task.tag!r}. Must be S, P, or US<digits>"
+        )
+
+    if " - " in description:
+        raise ValueError(
+            f"description must not contain ' - ', got: {description!r}"
+        )
+
     tag_segment = f"[{task.tag}] {description}"
     base = f"{task.task_id} {EM} {tag_segment}"
 

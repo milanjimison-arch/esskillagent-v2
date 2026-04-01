@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from orchestrator.store.db import Store, _now
+from orchestrator.store.db import Store
 from orchestrator.store._lvl_queries import (
     LvlLogRecord,
     insert_lvl_log,
@@ -279,7 +279,7 @@ async def insert_evidence_record(
         event_type=event_type,
         detail=detail,
     )
-    async with store._conn.execute(
+    async with store.execute(
         "SELECT * FROM evidence WHERE evidence_id = ?", (evidence_id,)
     ) as cur:
         row = await cur.fetchone()
@@ -320,7 +320,7 @@ async def list_evidence_records_for_stage(
         raise ValueError("pipeline_id must not be empty")
     if not stage:
         raise ValueError("stage must not be empty")
-    async with store._conn.execute(
+    async with store.execute(
         "SELECT * FROM evidence WHERE pipeline_id = ? AND stage = ?",
         (pipeline_id, stage),
     ) as cur:

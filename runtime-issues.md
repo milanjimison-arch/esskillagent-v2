@@ -273,3 +273,17 @@
 **根因**：CLAUDE.md 写的 "每个模块 < 400 行" 是硬性约束，agent 会严格检查并报告违规。但实际开发中，一个模块 420 行和 400 行没有本质区别。
 
 **建议**：行数约束改为软性，允许 50 行波动范围（即 < 450 行为合格，> 450 行才需要拆分）。避免 agent 为了凑行数做不必要的拆分。
+
+---
+
+## R20. 审查修复阶段 commit 消息中 task_id 为 "unknown"
+
+**现象**：审查修复阶段的 commit 消息为 `green(unknown): implement to pass`，GitHub Actions 显示同样的标题。
+
+**根因**：审查修复阶段调用 `_commit_and_push` 时传入的 `cfg` 没有 `task_id` 字段，`cfg.get("task_id", "unknown")` 回退到默认值。该阶段不是某个 task 的 RED/GREEN，而是整体审查后的修复提交。
+
+**影响**：
+- git history 无法追溯该提交对应的操作阶段
+- CI 日志中 commit 标题无意义
+
+**建议**：审查修复阶段的 commit 消息应使用 `"review_fix"` 或 `"auto_fix_attempt_N"` 替代 `"unknown"`。

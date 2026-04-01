@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from orchestrator.store.db import Store, _now
+from orchestrator.store.db import Store, now
 
 
 @dataclass(frozen=True)
@@ -66,15 +66,15 @@ async def insert_lvl_log(
         raise ValueError("level must not be empty")
     if not message:
         raise ValueError("message must not be empty")
-    now = _now()
-    async with store._conn.execute(
+    timestamp = now()
+    async with store.execute(
         """INSERT INTO lvl (pipeline_id, level, message, detail, created_at)
            VALUES (?, ?, ?, ?, ?)""",
-        (pipeline_id, level, message, detail, now),
+        (pipeline_id, level, message, detail, timestamp),
     ) as cur:
         row_id = cur.lastrowid
-    await store._conn.commit()
-    async with store._conn.execute(
+    await store.commit()
+    async with store.execute(
         "SELECT * FROM lvl WHERE id = ?", (row_id,)
     ) as cur:
         row = await cur.fetchone()
@@ -95,7 +95,7 @@ async def list_lvl_logs(
     """
     if not pipeline_id:
         raise ValueError("pipeline_id must not be empty")
-    async with store._conn.execute(
+    async with store.execute(
         "SELECT * FROM lvl WHERE pipeline_id = ? ORDER BY id ASC",
         (pipeline_id,),
     ) as cur:
@@ -119,7 +119,7 @@ async def list_lvl_logs_by_level(
         raise ValueError("pipeline_id must not be empty")
     if not level:
         raise ValueError("level must not be empty")
-    async with store._conn.execute(
+    async with store.execute(
         "SELECT * FROM lvl WHERE pipeline_id = ? AND level = ? ORDER BY id ASC",
         (pipeline_id, level),
     ) as cur:

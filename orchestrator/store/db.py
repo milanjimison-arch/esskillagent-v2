@@ -33,6 +33,11 @@ _SCHEMA_VERSION = 2
 
 def _now() -> str:
     """Return current UTC time as ISO 8601 string."""
+    return now()
+
+
+def now() -> str:
+    """Return current UTC time as ISO 8601 string."""
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -69,6 +74,14 @@ class Store:
 
     def is_open(self) -> bool:
         return self._conn is not None
+
+    def execute(self, sql: str, params: Any = ()) -> Any:
+        """Execute a SQL statement and return the cursor context manager."""
+        return self._conn.execute(sql, params)
+
+    async def commit(self) -> None:
+        """Commit the current transaction."""
+        await self._conn.commit()
 
     # ------------------------------------------------------------------ #
     # pipelines                                                            #

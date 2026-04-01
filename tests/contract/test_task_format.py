@@ -84,13 +84,8 @@ def _make_task(
     description: str,
     file_path: str | None = None,
 ) -> Task:
-    """Directly construct a Task bypassing parse_line (for generator tests)."""
-    t = object.__new__(Task)
-    t.task_id = task_id
-    t.tag = tag
-    t.description = description
-    t.file_path = file_path
-    return t
+    """Construct a Task using the normal constructor (for generator tests)."""
+    return Task(task_id=task_id, tag=tag, description=description, file_path=file_path)
 
 
 # ===========================================================================
