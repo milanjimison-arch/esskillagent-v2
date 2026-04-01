@@ -179,5 +179,22 @@
 **建议**：
 - plan agent 的 tasks prompt 应引导更多并行：文件不重叠的 task 默认标 `[P]`，仅有显式 import 依赖时才串行
 - 允许跨 story_ref 并行：同一 implement 阶段内，不同 US 组的 `[P]` task 若文件不重叠可以合并为一个并行 batch
-- 考虑 RED 和 GREEN 合并 CI：多个 task 的 RED 测试一次性 batch commit，一次 CI 验证所有 RED，减少 CI 调用次数
 - 极端优化：本地 pytest 预检（秒级）+ CI 仅做最终验证，减少 CI 往返
+
+---
+
+## R14. 并行 batch CI 验证粒度不足
+
+**现象**：并行组（如 T010+T011）共用一次 CI 验证 RED/GREEN，无法区分单个 task 的通过/失败。
+
+**具体风险**：
+- RED 阶段：如果其中一个 task 的 agent 偷写了实现（如 R06），batch CI 仍报 failure，该 task 被误判为 "valid RED"
+- GREEN 阶段：如果一个 task 通过但另一个失败，CI 整体 failure，所有 task 被重试，已通过的 task 白白重跑
+
+**根因**：batch commit 将多个 task 的文件合并为一次 CI 运行，编排器只看 CI 整体 pass/fail，没有 per-task 粒度。
+
+**建议**：
+- plan 阶段应预估 CI 调用次数：串行 task 每个 2 次 CI（RED+GREEN），并行组每组 2 次 CI，总数写入 `specs/plan.md` 供用户评估
+- RED 验证改进：batch CI 失败后，解析 pytest 输出按测试文件归属 task，逐个判断是否 "valid RED"
+- GREEN 验证改进：batch CI 失败后，识别哪些 task 的测试通过了，只对失败的 task 重试 GREEN
+- 考虑每个 task 独立 CI（牺牲速度换精度），或通过 pytest `-k` 参数只跑单个 task 的测试子集
