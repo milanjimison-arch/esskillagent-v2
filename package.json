@@ -1,9 +1,0 @@
-{
-  "name": "esskillagent-v2",
-  "version": "2.0.0",
-  "description": "E+S Orchestrator v2 test runner",
-  "scripts": {
-    "test": "python -m pytest tests/unit/stages/test_base.py -v --tb=short",
-    "test:coverage": "python -m pytest tests/unit/stages/test_base.py -v --tb=short --cov=orchestrator/stages/base.py --cov-report=term-missing --cov-fail-under=80"
-  }
-}

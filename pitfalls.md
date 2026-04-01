@@ -258,3 +258,63 @@
 **修复**：Knowledge Base 注入时加 IMPORTANT 提示 "use the full absolute path from the list above"。
 
 **v2 方案**：Knowledge Base 注入格式保持一致，每个文件列出绝对路径。
+
+---
+
+## 22. `_commit_and_push` git add 路径硬编码
+
+**问题**：`_commit_and_push` 中 `git add` 的目标目录硬编码为 `src/`, `src-tauri/`, `tests/` 等，不覆盖 Python 项目的 `orchestrator/` 等目录。
+
+**后果**：Python 项目的所有文件改动无法被 stage，导致 "nothing to commit or push"，所有 task 的 RED 阶段全部失败。
+
+**修复**：改为自动扫描 `cwd` 下的顶层目录（排除 `.git`, `.workflow`, `node_modules` 等已知非源码目录），动态 `git add`。
+
+**v2 方案**：`_commit_and_push` 应自动检测项目目录结构，或从配置读取 `source_dirs` 列表。
+
+---
+
+## 23. 项目未初始化 git 仓库
+
+**问题**：编排器假设 `cwd` 已经是 git 仓库且有 GitHub remote，但新项目目录可能既无 `.git` 也无 remote。
+
+**后果**：所有 git 操作（add, commit, push）静默失败，编排器报 "nothing to commit or push" 而非真正原因。
+
+**修复**：手动 `git init` + `gh repo create` + 推送初始 commit。
+
+**v2 方案**：编排器启动时检查 git 状态，若无 `.git` 则报错并提示用户初始化；若无 remote 则自动提示或创建。
+
+---
+
+## 24. `_detect_task_stack` 不支持 Python 项目
+
+**问题**：`_detect_task_stack` 只识别 `rust` 和 `frontend` 两种技术栈，`.py` 文件返回 `None`。
+
+**后果**：Python task 走 "unknown stack — check all jobs" 逻辑，会检查不存在的 Rust/Frontend job，导致误判。
+
+**修复**：增加 `"python"` stack，`.py` 文件扩展名匹配返回 `"python"`。
+
+**v2 方案**：`detect_stack()` 应支持可扩展的技术栈注册（rust/frontend/python/go 等），而非 if-elif 硬编码。
+
+---
+
+## 25. CI job 名称硬编码不支持多语言
+
+**问题**：`_relevant_jobs_pass` 和 RED/GREEN 检查逻辑硬编码了 `"Rust Tests"`, `"Rust Build Check"`, `"Frontend Tests"`, `"TypeScript Check"` 四个 job 名。
+
+**后果**：Python 项目的 CI job（`"Python Tests"`, `"Coverage Check"`）不在检查范围内，编排器无法正确评估 CI 结果。
+
+**修复**：增加 `python_jobs = ("Python Tests", "Coverage Check")` 及对应分支逻辑。
+
+**v2 方案**：CI job 映射应从配置读取（如 `ci_jobs: {python: ["Python Tests", "Coverage Check"]}`），而非代码硬编码。
+
+---
+
+## 26. `_has_test_targets` 不检测 Python 项目
+
+**问题**：`_has_test_targets` 只检查 `src-tauri/Cargo.toml` 和 `package.json`，Python 项目没有这些文件。
+
+**后果**：CI 模式下 Python 项目被判定为"无测试目标"，直接跳过 CI 检查，RED/GREEN 阶段不执行。
+
+**修复**：增加 `pytest.ini`, `pyproject.toml`, `setup.py`, `setup.cfg` 检测，以及 `tests/` 目录存在性检查。
+
+**v2 方案**：测试目标检测应基于配置 + 自动发现（扫描常见测试配置文件和目录），而非硬编码文件列表。
