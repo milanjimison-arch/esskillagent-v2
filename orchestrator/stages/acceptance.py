@@ -14,12 +14,11 @@ from orchestrator.stages.base import ReviewOutcome, StageABC, StageResult
 # Sub-step names for the acceptance stage, in execution order.
 ACCEPTANCE_SUB_STEPS: tuple[str, ...] = ("verification", "traceability", "review")
 
+_MARKDOWN_HEADER = "| FR | Tasks | Tests | Status |\n|---|---|---|---|\n"
+
 
 class TraceabilityEntry:
-    """Represents one FR's row in the traceability matrix.
-
-    Minimal stub — stores attributes but does not implement any business logic.
-    """
+    """Represents one FR's row in the traceability matrix."""
 
     def __init__(
         self,
@@ -33,42 +32,58 @@ class TraceabilityEntry:
 
 
 class TraceabilityMatrix:
-    """Traceability matrix: maps FRs → tasks → tests and flags unimplemented FRs.
+    """Traceability matrix: maps FRs → tasks → tests and flags unimplemented FRs."""
 
-    Minimal stub — all methods return empty/incorrect values; implementation pending.
-    """
-
-    def __init__(self, entries: list[TraceabilityEntry]) -> None:  # noqa: ARG002
-        # Stub: does not store entries — implementation pending.
-        pass
+    def __init__(self, entries: list[TraceabilityEntry]) -> None:
+        self._entries: list[TraceabilityEntry] = entries
 
     def unimplemented_frs(self) -> list[str]:
         """Return the list of FR IDs that have no implementing task or no test.
 
-        Stub: always returns empty list.
+        Each FR appears exactly once in the returned list.
         """
-        return []
+        return [
+            entry.fr_id
+            for entry in self._entries
+            if not entry.tasks or not entry.tests
+        ]
 
     def to_dict(self) -> dict:
         """Return the matrix as a plain dict suitable for JSON serialisation.
 
-        Stub: always returns empty dict.
+        Keys are FR IDs in insertion order. Each value contains 'tasks', 'tests',
+        and 'status' ('implemented' or 'unimplemented').
         """
-        return {}
+        result: dict = {}
+        for entry in self._entries:
+            is_implemented = bool(entry.tasks) and bool(entry.tests)
+            result[entry.fr_id] = {
+                "tasks": entry.tasks,
+                "tests": entry.tests,
+                "status": "implemented" if is_implemented else "unimplemented",
+            }
+        return result
 
     def to_markdown(self) -> str:
         """Return the matrix rendered as a Markdown table.
 
-        Stub: always returns empty string.
+        Always includes the header row, even when there are no entries.
         """
-        return ""
+        lines: list[str] = [_MARKDOWN_HEADER]
+        for entry in self._entries:
+            is_implemented = bool(entry.tasks) and bool(entry.tests)
+            status = "implemented" if is_implemented else "unimplemented"
+            tasks_str = ", ".join(entry.tasks) if entry.tasks else ""
+            tests_str = ", ".join(entry.tests) if entry.tests else ""
+            lines.append(f"| {entry.fr_id} | {tasks_str} | {tests_str} | {status} |\n")
+        return "".join(lines)
 
 
 def generate_traceability_matrix(
     frs: list[str],
     task_map: dict[str, list[str]],
     test_map: dict[str, list[str]],
-) -> "TraceabilityMatrix":
+) -> TraceabilityMatrix:
     """Generate a TraceabilityMatrix from spec FRs, task mapping, and test mapping.
 
     Parameters
@@ -83,11 +98,17 @@ def generate_traceability_matrix(
     Returns
     -------
     TraceabilityMatrix
-        The generated matrix.
-
-    Stub: returns an empty TraceabilityMatrix regardless of inputs.
+        The generated matrix. Extra keys in maps not in frs are ignored.
     """
-    return TraceabilityMatrix(entries=[])
+    entries = [
+        TraceabilityEntry(
+            fr_id=fr,
+            tasks=task_map.get(fr, []),
+            tests=test_map.get(fr, []),
+        )
+        for fr in frs
+    ]
+    return TraceabilityMatrix(entries=entries)
 
 
 class AcceptanceStage(StageABC):
@@ -102,10 +123,16 @@ class AcceptanceStage(StageABC):
 
     async def run(self) -> StageResult:
         steps_executed: list[str] = list(self.sub_steps)
+        matrix = generate_traceability_matrix(frs=[], task_map={}, test_map={})
         return StageResult(
             passed=True,
             attempts=1,
-            data={"steps_executed": steps_executed},
+            data={
+                "steps_executed": steps_executed,
+                "traceability": matrix.to_dict(),
+                "unimplemented_frs": matrix.unimplemented_frs(),
+                "traceability_report": matrix.to_markdown(),
+            },
         )
 
     async def _do_review(self) -> ReviewOutcome:

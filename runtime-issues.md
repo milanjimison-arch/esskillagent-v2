@@ -242,3 +242,24 @@
 **建议**：
 - task 重跑时，先将该 task 的所有旧 lvl 记录标记 `superseded=1`
 - 或在 `mark_task_running` 时自动 supersede 前序记录
+
+---
+
+## R18. 续接运行后 Wave 面板进度显示不正确
+
+**现象**：编排器从 implement 阶段断点续接后，Wave 面板显示：
+- Stage Overview 显示 `Progress: 2/4 stages completed`（spec + plan），implement 未标记为 running
+- acceptance 仍显示 `○ pending`
+- implement 阶段的 task 进度条未反映已完成的 task（T001-T006 等）
+
+**根因**：Wave 面板在启动时从 DB 读取状态渲染，但续接模式下：
+1. implement 的 stage_progress 是手动设为 `running`，Wave 可能未正确刷新
+2. 已完成的 task 在面板上没有回填显示
+3. 面板的 task 列表可能只显示当前 session 的 task，不含历史完成的
+
+**影响**：用户无法通过面板了解真实进度，只能看日志。
+
+**建议**：
+- Wave 面板启动时应扫描 DB 中所有 task 状态，回填已完成的 task 进度
+- 续接运行时 implement 阶段应显示 `● running (resumed)`
+- task 进度应显示 `8/20 completed` 而非从 0 开始
