@@ -318,3 +318,15 @@
 **修复**：增加 `pytest.ini`, `pyproject.toml`, `setup.py`, `setup.cfg` 检测，以及 `tests/` 目录存在性检查。
 
 **v2 方案**：测试目标检测应基于配置 + 自动发现（扫描常见测试配置文件和目录），而非硬编码文件列表。
+
+---
+
+## 27. RED 阶段 agent 同时写了测试和实现
+
+**问题**：`_call_red_agent` 的 prompt 只包含任务描述和文件路径，没有明确约束"只写测试，禁止写实现"。`tdd-guide` agent 的定义包含完整 RED-GREEN-REFACTOR 流程，agent 自动跑完了整个循环。
+
+**后果**：RED 阶段 agent 同时写了 873 行测试 + 257 行实现代码，CI 全部 PASSED，编排器判定为"无效 RED"（测试没有失败）。
+
+**修复**：RED prompt 开头增加明确约束：`## 阶段\nRED — 只写测试，禁止写实现代码`，以及详细的约束条件（只创建测试文件、被测模块仅空 stub、测试必须因断言失败而非 ImportError 失败）。
+
+**v2 方案**：RED/GREEN prompt 模板应分离，RED 模板包含 "ONLY write tests" 硬约束，GREEN 模板包含 "implement to pass existing tests" 硬约束。

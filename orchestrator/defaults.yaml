@@ -1,0 +1,11 @@
+models:
+  default: claude-sonnet-4-6
+  spec: claude-opus-4-6
+  reviewer: claude-opus-4-6
+test_command: npm test
+local_test: true
+ci_timeout: 1800
+max_retries: 3
+max_green_retries: 3
+max_fix_retries: 2
+stage_timeout: 3600
