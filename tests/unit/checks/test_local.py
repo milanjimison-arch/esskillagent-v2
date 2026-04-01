@@ -809,3 +809,38 @@ class TestEdgeCases:
         assert mock_run.call_count == 3, (
             f"TimeoutExpired retry: expected 3 attempts, got {mock_run.call_count}"
         )
+
+
+# ===========================================================================
+# 11. _split_command Windows 兼容性 (H2)
+# ===========================================================================
+
+
+class TestSplitCommand:
+    """H2: _split_command must correctly handle Windows backslash paths."""
+
+    def test_split_command_returns_list(self):
+        """_split_command always returns a list of strings."""
+        from orchestrator.checks.local import _split_command
+        result = _split_command("pytest tests/ -v")
+        assert isinstance(result, list)
+
+    def test_split_command_simple(self):
+        """_split_command splits a simple command correctly."""
+        from orchestrator.checks.local import _split_command
+        result = _split_command("python -m pytest tests/ -v")
+        assert result == ["python", "-m", "pytest", "tests/", "-v"]
+
+    def test_split_command_preserves_backslash_on_windows(self):
+        """_split_command with posix=False preserves backslashes."""
+        import shlex
+        # Simulate Windows behavior: posix=False preserves backslashes
+        result = shlex.split(r"C:\Python\pytest.exe tests\unit", posix=False)
+        assert r"C:\Python\pytest.exe" in result
+        assert r"tests\unit" in result
+
+    def test_split_command_with_spaces_posix_false(self):
+        """posix=False preserves quoted paths with spaces."""
+        import shlex
+        result = shlex.split(r'"C:\Program Files\Python\python.exe" -m pytest', posix=False)
+        assert any("Program Files" in part for part in result)

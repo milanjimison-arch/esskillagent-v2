@@ -83,11 +83,13 @@ def parse_line(line: str) -> Task:
     if not _VALID_TAG.match(tag):
         raise TaskParseError(f"Invalid tag: {tag!r}. Must be S, P, or US<digits>")
 
-    # Check for mixed separators: hyphen used as separator inside the description
-    if " - " in description:
+    # Validate description for invalid separator sequences
+    try:
+        _validate_description(description)
+    except ValueError as exc:
         raise TaskParseError(
-            f"Mixed separators detected (em-dash and hyphen) in: {stripped!r}"
-        )
+            f"Mixed separators detected in: {stripped!r}"
+        ) from exc
 
     # Parse optional file_path from third segment
     file_path: str | None = None

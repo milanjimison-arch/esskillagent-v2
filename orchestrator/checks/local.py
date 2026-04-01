@@ -9,9 +9,21 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+import sys
 import time
 
 from orchestrator.checks.base import CheckStrategy
+
+_POSIX = sys.platform != "win32"
+
+
+def _split_command(command: str) -> list[str]:
+    """Split a shell command string into a list, respecting the current platform.
+
+    On Windows, ``shlex.split`` runs with ``posix=False`` so that
+    backslash-heavy paths (e.g. ``C:\\path\\to\\pytest``) are preserved.
+    """
+    return shlex.split(command, posix=_POSIX)
 
 
 class CheckResult:
@@ -45,10 +57,12 @@ class LocalCheckStrategy(CheckStrategy):
         command: str,
         max_retries: int = 3,
         backoff_base: float = 1.0,
+        timeout: int = 300,
     ):
         self._command = command
         self._max_retries = max_retries
         self._backoff_base = backoff_base
+        self._timeout = timeout  # H1: 子进程超时（秒），默认 5 分钟
 
     # ------------------------------------------------------------------
     # Internal: run with retry + backoff
@@ -70,10 +84,11 @@ class LocalCheckStrategy(CheckStrategy):
         for attempt in range(total_attempts):
             try:
                 proc = subprocess.run(
-                    shlex.split(command),
+                    _split_command(command),
                     shell=False,
                     capture_output=True,
                     text=True,
+                    timeout=self._timeout,  # H1: 防止无限等待
                 )
                 output = (proc.stdout or "") + (proc.stderr or "")
                 if proc.returncode == 0:
@@ -117,10 +132,11 @@ class LocalCheckStrategy(CheckStrategy):
         """
         try:
             proc = subprocess.run(
-                shlex.split(command),
+                _split_command(command),
                 shell=False,
                 capture_output=True,
                 text=True,
+                timeout=self._timeout,  # H1: 防止无限等待
             )
             return proc.returncode != 0
         except (subprocess.TimeoutExpired, FileNotFoundError):

@@ -330,3 +330,27 @@ brooks-reviewer 的解析是正确的（Round 1: H:1 M:3 → Round 2: H:1 M:2，
 - 审查报告应使用结构化输出（如 JSON verdict），而非从 markdown 表格正则解析
 - 至少修复正则以兼容 `**HIGH**` 等加粗格式
 - 添加校验：解析出的 severity 总数应等于报告中 findings 数量，不等则 warning
+
+---
+
+## R22. `_auto_fix` 的 fixer 拿不到完整审查报告
+
+**现象**：fixer agent 修复时可能缺少完整的审查发现，只拿到摘要信息。
+
+**根因**：`_review_verify_fix`（engine.py:1198）调用 `_get_review_issues("implement")`，读的是 `failure_history`（store 的历史摘要），不是审查输出文件。`_auto_fix` 内部只在 `error_text` 为空时才回退读三个审查文件（code_review.txt, security.txt, brooks_review.txt）。正常情况下 `failure_history` 不为空，fixer 拿到的是摘要而非完整报告。
+
+**影响**：fixer 无法看到所有审查发现的详情，修复可能不完整。
+
+**建议**：`_auto_fix` 应始终读取审查输出文件作为 fixer 的输入，`failure_history` 仅作为补充上下文。
+
+---
+
+## R23. `_auto_fix` 的 `no_critical` 检查读错文件导致永远失败
+
+**现象**：`_auto_fix` 修复后的 `no_critical` 检查永远返回 `(False, "无审查输出可检查")`。
+
+**根因**：`review_pipeline.py:492` 调用 `CHECKERS["no_critical"](self.cwd, self.config)`，`self.config` 是 brownfield.yaml 配置，没有 `output_file` 字段。`_get_output_path` 回退到 `last_output.txt`，该文件不存在。而 `_pre_push_review_pipeline:251` 的调用传入了正确的 `{"output_file": "code_review"}`。
+
+**影响**：`_auto_fix` 返回 `tests_ok and crit_ok`，`crit_ok` 永远为 False，即使 fixer 修复正确、测试通过，auto_fix 仍返回 False，修复被误判为失败。
+
+**修复建议**：将第 492 行改为 `CHECKERS["no_critical"](self.cwd, {"output_file": "code_review"})`，或直接只检查 tests 通过即可。

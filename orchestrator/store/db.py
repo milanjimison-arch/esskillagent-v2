@@ -54,7 +54,8 @@ class Store:
         """Open connection, enable WAL, create schema, set schema version."""
         self._conn = await aiosqlite.connect(self.db_path)
         self._conn.row_factory = aiosqlite.Row
-        await self.execute("PRAGMA journal_mode=WAL")
+        async with self.execute("PRAGMA journal_mode=WAL"):
+            pass  # 消费并关闭 PRAGMA cursor
         await self._conn.executescript(_DDL)
         await self.commit()
         version_val = await self.get_setting("schema_version")
@@ -70,8 +71,13 @@ class Store:
     def is_open(self) -> bool:
         return self._conn is not None
 
-    def execute(self, sql: str, params: Any = ()) -> "aiosqlite.cursor.CursorIterator[aiosqlite.Row]":
-        """Execute a SQL statement and return the cursor context manager."""
+    def execute(self, sql: str, params: Any = ()) -> Any:
+        """Execute a SQL statement and return the cursor context manager.
+
+        Returns an awaitable/async-context-manager (aiosqlite.context.Result).
+        Usage: ``await self.execute(...)`` for writes,
+               ``async with self.execute(...) as cur:`` for reads.
+        """
         if self._conn is None:
             raise RuntimeError("Store is not initialized")
         return self._conn.execute(sql, params)
