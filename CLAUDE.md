@@ -73,3 +73,16 @@ python -m pytest tests/ -v
 ## 设计文档索引
 
 （由编排器 spec/plan 阶段自动生成到 `specs/` 目录）
+
+## 设计文档索引
+<!-- E+S:DOCS_INDEX -->
+
+- [requirements.md](specs\checklists\requirements.md)
+- [constitution.md](specs\constitution.md)
+- [data-model.md](specs\data-model.md)
+- [plan.md](specs\plan.md)
+- [quickstart.md](specs\quickstart.md)
+- [research.md](specs\research.md)
+- [spec.md](specs\spec.md)
+- [tasks.md](specs\tasks.md)
+<!-- /E+S:DOCS_INDEX -->

@@ -276,6 +276,68 @@
 
 ---
 
+## R24. task-generator 的 [FR-###] 标签未覆盖所有 FR
+
+**现象**：plan 阶段 coverage 检查报 `tasks.md 未覆盖 15 个 FR`，但底部 FR Coverage Matrix 表格显示这些 FR 实际有对应 task。
+
+**根因**：coverage 检查只扫描 task 行中的 `[FR-###]` 标签（正则匹配），不读底部的 FR Coverage Matrix 表格。task-generator agent 在 task 描述中只标注了主要 FR，但部分 FR 被归入"隐式覆盖"写在底部矩阵中而非 task 行内。例如 T008 描述中标了 `[FR-026]~[FR-031]`，但 FR-033~039 只在底部矩阵写了 `T008 (implement/TDD runner integration)`。
+
+**影响**：coverage 检查误报缺失，可能触发不必要的 gate 阻断或警告。
+
+**建议**：
+- task-generator prompt 中要求：每个 FR 必须出现在某个 task 行的 `[FR-###]` 标签中，不能只写在底部矩阵
+- 或 coverage 检查同时扫描底部矩阵表格作为补充数据源
+
+---
+
+## R25. [P] 任务全部降级串行 — parser 不识别 `--` 分隔符
+
+**现象**：implement 阶段所有 [P] 任务报 `[P] 但无 file_path，降级串行`，23 个任务全部串行执行。
+
+**根因**：三方格式不一致：
+- `task-generator` agent prompt (tasks-command.md) 第 109 行要求 em-dash `—` (U+2014)
+- `task-generator` agent template (tasks-template.md) 示例里没有任何分隔符
+- 实际 agent 输出使用了 `--`（双连字符），这是 LLM 最自然的输出
+- V1 parser (`task_parser.py:_extract_file_path`) 只识别 em-dash `—` 和 en-dash `–`，不识别 `--`
+
+这是 **pitfall #3**（parser 和 generator 格式漂移）的第二次重现。
+
+**影响**：
+- 所有 [P] 任务的 file_path 解析为空
+- 并行任务全部降级为串行，执行时间成倍增长
+- 并行文件冲突检测失效（无 file_path 可比较）
+
+**修复**：
+1. V1 parser `_extract_file_path` 新增策略 2：识别 `" -- "` 双连字符分隔（已修复）
+2. agent prompt (tasks-command.md) 改为推荐 `--` 而非 em-dash，因为 LLM 输出 `--` 更可靠（已修复）
+3. agent template (tasks-template.md) 示例统一添加 `-- file/path` 格式（已修复）
+
+**教训**：LLM 生成的文本中，`--` 和 `—` 是不可互换的。Parser 必须兼容两者。Agent prompt 应使用 LLM 最自然输出的格式（`--`），而非排版格式（`—`）。
+
+---
+
+## R26. Context Rot — 审查/修复循环复用脏 session
+
+**现象**：审查→修复→重新审查循环中，Round 2 的 reviewer 带着 Round 1 的完整对话历史，context 被前轮残留污染。fixer 多次 retry 也累积前次失败的冗余上下文。
+
+**根因**：`_review_verify_fix` 的修复循环在调用 `_run_parallel_reviews()` 重新审查前，没有清除 reviewer 的 session。Session key `review_{agent_name}` 在 Round 1 和 Round 2 之间保持不变，SessionManager 自动续接了上轮对话。
+
+同样，`_rerun_stage_content` 中 plan 阶段重跑后，`task_generator` 的 session 没有清理，导致 tasks.md 重新生成时带着上次错误输出的记忆。
+
+**影响**：
+- reviewer 可能因前轮残留而产生偏见（锚定效应）
+- fixer 的 context 越来越长，后期修复质量下降
+- task_generator 重试时受前次错误输出干扰
+
+**修复**：
+1. `_review_verify_fix` 重新审查前清除所有 reviewer + fixer 的 session（已修复）
+2. `_rerun_stage_content` plan 分支重跑后清除 task_generator session（已修复）
+3. RED 阶段 tdd-guide 和 GREEN 阶段 implementer 已按 task_id 隔离，无需额外处理
+
+**教训**：session 续接只在"同一任务的重试"中有价值（如 GREEN retry），在"全新审查轮次"中是有害的。原则：**同任务重试 → 续接，新轮次 → 清除**。
+
+---
+
 ## R20. 审查修复阶段 commit 消息中 task_id 为 "unknown"
 
 **现象**：审查修复阶段的 commit 消息为 `green(unknown): implement to pass`，GitHub Actions 显示同样的标题。

@@ -1,5 +1,9 @@
 """DDL schema string for E+S Orchestrator v2 SQLite database."""
 
+from dataclasses import dataclass
+
+SCHEMA_VERSION = 2  # stub: tests expect 3
+
 _DDL = """
 CREATE TABLE IF NOT EXISTS tasks (
     task_id TEXT PRIMARY KEY,
@@ -101,3 +105,17 @@ CREATE TABLE IF NOT EXISTS task_groups (
     task_count INTEGER DEFAULT 0
 );
 """
+
+
+@dataclass(frozen=True)
+class ArtifactRecord:
+    """Stub: fields are intentionally wrong — tests will fail on field assertions."""
+
+    id: str = ""
+
+
+@dataclass(frozen=True)
+class LvlEventRecord:
+    """Stub: fields are intentionally wrong — tests will fail on field assertions."""
+
+    id: int = 0
