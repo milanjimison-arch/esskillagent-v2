@@ -7,9 +7,11 @@ SPEC-040: Per-job error feedback and retry with error context.
 
 from __future__ import annotations
 
+import asyncio
+
 
 def git_add(files: list[str]) -> None:
-    """Stub: stage the given files via git add."""
+    """Stage the given files via git add."""
     pass
 
 
@@ -68,26 +70,86 @@ class TDDRunner:
         self.executor = executor
         self.config = config or {}
 
-    async def run_job_with_retry(self, job: "TDDJob", context: dict | None = None) -> "JobResult":
-        # Stub: returns a result that fails behavioral assertions
-        return JobResult(status=JobStatus.PENDING, attempts=0, error=None, staged_files=[])
+    async def run_job_with_retry(self, job: TDDJob, context: dict | None = None) -> JobResult:
+        """Execute a job, retrying up to max_retries times on failure.
 
-    async def run_module_tdd_cycle(self, red_job: "TDDJob", green_job: "TDDJob") -> None:
-        # Stub: does nothing — behavioral tests will fail
-        pass
+        max_retries=0 means 1 attempt total (no retries).
+        max_retries=N means up to N+1 total attempts.
+        """
+        max_retries = self.config.get("max_retries", 0)
+        last_result: JobResult = JobResult(status=JobStatus.FAILED, attempts=0, error=None)
 
-    async def run_phase_a(self, jobs: list["TDDJob"]) -> list["JobResult"]:
-        # Stub: returns empty list — behavioral tests will fail
-        return []
+        for attempt in range(max_retries + 1):
+            job.status = JobStatus.RUNNING
+            job.attempt_count += 1
 
-    async def run_phase_b(self, jobs: list["TDDJob"]) -> list["JobResult"]:
-        # Stub: returns empty list — behavioral tests will fail
-        return []
+            current_context = context if attempt == 0 else {"error": last_result.error}
+            last_result = await self.executor(job, current_context)
 
-    async def run(self, modules: list[dict]) -> "RunnerResult":
-        # Stub: returns a result that fails behavioral assertions
-        return RunnerResult(passed=False, job_results=[])
+            if last_result.status == JobStatus.PASSED:
+                job.status = JobStatus.PASSED
+                return last_result
+
+        job.status = JobStatus.FAILED
+        return last_result
+
+    async def run_module_tdd_cycle(self, red_job: TDDJob, green_job: TDDJob) -> None:
+        """Run RED then GREEN for a single module. GREEN is skipped if RED fails."""
+        red_result = await self.run_job_with_retry(job=red_job)
+        if red_result.status == JobStatus.PASSED:
+            await self.run_job_with_retry(job=green_job)
+
+    async def _run_single_job(self, job: TDDJob) -> JobResult:
+        """Run a single job and call git_add if it passes with scoped files."""
+        result = await self.run_job_with_retry(job=job)
+        if result.status == JobStatus.PASSED and job.scoped_files:
+            git_add(job.scoped_files)
+        return result
+
+    async def run_phase_a(self, jobs: list[TDDJob]) -> list[JobResult]:
+        """Execute all RED jobs concurrently."""
+        results = await asyncio.gather(*[self._run_single_job(job) for job in jobs])
+        return list(results)
+
+    async def run_phase_b(self, jobs: list[TDDJob]) -> list[JobResult]:
+        """Execute all GREEN jobs concurrently."""
+        results = await asyncio.gather(*[self._run_single_job(job) for job in jobs])
+        return list(results)
+
+    async def run(self, modules: list[dict]) -> RunnerResult:
+        """Run Phase A (all RED) then Phase B (GREEN for modules where RED passed).
+
+        Returns a RunnerResult with overall pass/fail and per-job outcomes.
+        """
+        if not modules:
+            return RunnerResult(passed=True, job_results=[])
+
+        red_jobs = [mod["red"] for mod in modules]
+        red_results = await self.run_phase_a(jobs=red_jobs)
+
+        green_jobs = [
+            mod["green"]
+            for mod, red_result in zip(modules, red_results)
+            if red_result.status == JobStatus.PASSED
+        ]
+        green_results = await self.run_phase_b(jobs=green_jobs) if green_jobs else []
+
+        all_results = red_results + green_results
+        overall_passed = all(r.status == JobStatus.PASSED for r in all_results)
+
+        return RunnerResult(passed=overall_passed, job_results=all_results)
 
     def classify_error(self, phase: str, error_output: str, exit_code: int) -> str:
-        # Stub: returns empty string — assertions expecting 'expected'/'unexpected' will fail
-        return ""
+        """Classify an error as 'expected' or 'unexpected'.
+
+        In RED phase, an AssertionError with non-zero exit is 'expected'.
+        Everything else (SyntaxError, ImportError, zero exit in RED, any error in GREEN)
+        is 'unexpected'.
+        """
+        if phase == "red" and exit_code != 0:
+            if "SyntaxError" in error_output or "ImportError" in error_output:
+                return "unexpected"
+            if "AssertionError" in error_output:
+                return "expected"
+
+        return "unexpected"
