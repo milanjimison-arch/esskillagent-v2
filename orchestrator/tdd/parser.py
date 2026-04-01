@@ -144,3 +144,39 @@ def group_tasks(tasks: list[Task]) -> TaskGroup:
             raise TaskParseError(f"Unknown tag for grouping: {task.tag!r}")
 
     return group
+
+
+def format_task_line(task: Task) -> str:
+    """Serialize a Task back into the em-dash line format expected by parse_line.
+
+    Format: ``{task_id} — [{tag}] {description}``
+    or:     ``{task_id} — [{tag}] {description} — {file_path}``
+
+    Raises:
+        ValueError: if task_id <= 0, description is empty, or description
+                    contains the em-dash separator sequence ' — '.
+    """
+    if task.task_id <= 0:
+        raise ValueError(
+            f"task_id must be a positive integer, got: {task.task_id}"
+        )
+
+    description = task.description.strip()
+
+    if not description:
+        raise ValueError("description must not be empty or whitespace-only")
+
+    separator = f" {EM} "
+    if separator in description:
+        raise ValueError(
+            f"description must not contain the em-dash separator {separator!r}, "
+            f"got: {description!r}"
+        )
+
+    tag_segment = f"[{task.tag}] {description}"
+    base = f"{task.task_id} {EM} {tag_segment}"
+
+    if task.file_path is not None:
+        return f"{base} {EM} {task.file_path}"
+
+    return base
