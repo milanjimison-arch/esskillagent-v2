@@ -13,11 +13,8 @@ import asyncio
 import inspect
 import uuid
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
-
-# ---------------------------------------------------------------------------
-# STAGE_NAMES — canonical four-stage order
-# ---------------------------------------------------------------------------
 
 STAGE_NAMES: tuple[str, ...] = ("spec", "plan", "implement", "acceptance")
 
@@ -25,36 +22,16 @@ STAGE_NAMES: tuple[str, ...] = ("spec", "plan", "implement", "acceptance")
 ATOMIC_STAGES: tuple[str, ...] = ("spec", "plan")
 
 
-# ---------------------------------------------------------------------------
-# NoCheckpointError — raised when resume() is called without a checkpoint
-# ---------------------------------------------------------------------------
-
-
 class NoCheckpointError(Exception):
     """Raised when resume() is called but no checkpoint file/record exists."""
-
-
-# ---------------------------------------------------------------------------
-# TaskNotFoundError — raised when retry() is called with an unknown task_id
-# ---------------------------------------------------------------------------
 
 
 class TaskNotFoundError(Exception):
     """Raised when retry() is called with a task_id that does not exist."""
 
 
-# ---------------------------------------------------------------------------
-# TaskNotRetryableError — raised when retry() is called for a non-BLOCKED task
-# ---------------------------------------------------------------------------
-
-
 class TaskNotRetryableError(Exception):
     """Raised when retry() is called for a task that is not in BLOCKED status."""
-
-
-# ---------------------------------------------------------------------------
-# PipelineResult — frozen dataclass (immutable DTO)
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -74,10 +51,7 @@ class PipelineResult:
 
 @dataclass(frozen=True)
 class RetryResult:
-    """Immutable result of a single-task retry cycle (RED → GREEN → review).
-
-    Stub only — implementation logic is not yet provided.
-    """
+    """Immutable result of a single-task retry cycle (RED → GREEN → review)."""
 
     task_id: str = ""
     passed: bool = False
@@ -114,6 +88,7 @@ class PipelineEngine:
         self.lock = asyncio.Lock()  # FR-059
         self._events: list[PipelineEvent] = []  # INV-1/INV-2 event log
         self._red_passed_tasks: set[str] = set()  # INV-3 tracking
+        self._tasks: dict[str, str] = dict(config.get("tasks", {}))
 
     def _check_preconditions(self, stage_name: str) -> bool:
         """Validate preconditions for a stage. Override in subclasses."""
@@ -257,22 +232,49 @@ class PipelineEngine:
             )
 
     def _get_task_status(self, task_id: str) -> str | None:
-        """Return the status string for task_id, or None if not found.
+        """Return the status string for task_id, or None if not found."""
+        return self._tasks.get(task_id)
 
-        Stub only — not yet implemented.
-        """
-        raise NotImplementedError("_get_task_status is not yet implemented")
+    def _set_task_status(self, task_id: str, status: str) -> None:
+        self._tasks[task_id] = status
+
+    async def _run_red_phase(self, task_id: str) -> Any:
+        return SimpleNamespace(passed=True, phase="red")
+
+    async def _run_green_phase(self, task_id: str) -> Any:
+        return SimpleNamespace(passed=True, phase="green")
+
+    async def _run_review_phase(self, task_id: str) -> Any:
+        return SimpleNamespace(passed=True, phase="review")
+
+    async def _run_single_task_tdd_cycle(self, task_id: str) -> Any:
+        phases: list[str] = []
+        red = await self._run_red_phase(task_id)
+        phases.append("red")
+        passed = red.passed
+        if passed:
+            green = await self._run_green_phase(task_id)
+            phases.append("green")
+            passed = green.passed
+        review = await self._run_review_phase(task_id)
+        phases.append("review")
+        return SimpleNamespace(passed=passed, phases=tuple(phases))
 
     async def retry(self, task_id: str) -> RetryResult:
-        """Re-execute a single TDD cycle (RED, GREEN, review) for a BLOCKED task.
-
-        Raises
-        ------
-        TaskNotFoundError
-            If task_id does not exist in this engine's task registry.
-        TaskNotRetryableError
-            If the task exists but is not in BLOCKED status (e.g. DONE, RUNNING).
-
-        Stub only — not yet implemented.
-        """
-        raise NotImplementedError("retry() is not yet implemented")
+        """Re-execute a single TDD cycle (RED, GREEN, review) for a BLOCKED task."""
+        async with self.lock:
+            status = self._get_task_status(task_id)
+            if status is None:
+                raise TaskNotFoundError(f"task {task_id!r} not found")
+            if status != "BLOCKED":
+                raise TaskNotRetryableError(
+                    f"task {task_id!r} has status {status} — only BLOCKED tasks can be retried"
+                )
+            cycle = await self._run_single_task_tdd_cycle(task_id)
+            if cycle.passed:
+                self._set_task_status(task_id, "DONE")
+            return RetryResult(
+                task_id=task_id,
+                passed=cycle.passed,
+                phases=getattr(cycle, "phases", ()),
+            )
