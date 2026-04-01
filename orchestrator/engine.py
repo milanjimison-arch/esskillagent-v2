@@ -37,7 +37,6 @@ class TaskNotRetryableError(Exception):
 @dataclass(frozen=True)
 class PipelineResult:
     """Immutable result of a full pipeline run."""
-
     passed: bool = False
     stage_results: dict[str, Any] = field(default_factory=dict)
     skipped_stages: list[str] = field(default_factory=list)
@@ -47,7 +46,6 @@ class PipelineResult:
 @dataclass(frozen=True)
 class RetryResult:
     """Immutable result of a single-task retry cycle (RED → GREEN → review)."""
-
     task_id: str = ""
     passed: bool = False
     phases: tuple[str, ...] = field(default_factory=tuple)
@@ -55,8 +53,7 @@ class RetryResult:
 
 @dataclass(frozen=True)
 class StatusResult:
-    """Immutable snapshot of current pipeline status. Stub — not implemented."""
-
+    """Immutable snapshot of current pipeline status."""
     pipeline_id: str | None = None
     active: bool = False
     stage_completions: dict[str, bool] = field(default_factory=dict)
@@ -64,25 +61,16 @@ class StatusResult:
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
 
-# ---------------------------------------------------------------------------
-# PipelineEvent — immutable LVL event emitted during pipeline execution
-# ---------------------------------------------------------------------------
-
 
 @dataclass(frozen=True)
 class PipelineEvent:
     """Immutable record of a single LVL event during a pipeline run."""
-
     event_type: str
     stage: str
     payload: dict[str, Any]
     prev_event_id: str | None = None
     event_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
 
-
-# ---------------------------------------------------------------------------
-# PipelineEngine — stage flow control only
-# ---------------------------------------------------------------------------
 
 
 class PipelineEngine:
@@ -287,5 +275,20 @@ class PipelineEngine:
             )
 
     async def status(self) -> StatusResult:
-        """Return current pipeline status. Stub — returns empty default (not implemented)."""
-        return StatusResult()
+        """Aggregate pipeline state from store into an immutable snapshot."""
+        if self._store is None:
+            return StatusResult()
+        pid: str | None = await self._store.get_active_pipeline_id()
+        if pid is None:
+            return StatusResult()
+        done = set(await self._store.list_completed_stages(pid))
+        counts: dict[str, int] = {}
+        for t in await self._store.list_tasks(pid):
+            s = t["status"]
+            counts[s] = counts.get(s, 0) + 1
+        return StatusResult(
+            pipeline_id=pid, active=True,
+            stage_completions={n: n in done for n in STAGE_NAMES},
+            task_counts=counts,
+            warnings=tuple(await self._store.list_warnings(pid)),
+        )
