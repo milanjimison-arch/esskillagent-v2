@@ -1,4 +1,4 @@
-"""Implement stage: TDD → review → push+CI.
+"""Implement stage: TDD → push+CI → review.
 
 FR-004: Stage MUST implement a review gate.
 FR-002: Checkpoint MUST be persisted after successful review.
@@ -9,7 +9,7 @@ from __future__ import annotations
 from orchestrator.stages.base import ReviewOutcome, StageABC, StageResult
 
 # Sub-step names for the implement stage, in execution order.
-IMPLEMENT_SUB_STEPS: tuple[str, ...] = ("TDD", "review", "push+CI")
+IMPLEMENT_SUB_STEPS: tuple[str, ...] = ("TDD", "push+CI", "review")
 
 
 class ImplementStage(StageABC):

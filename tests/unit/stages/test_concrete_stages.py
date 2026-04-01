@@ -351,8 +351,8 @@ class TestImplementStageIdentity:
 
     def test_implement_sub_steps_constant_correct(self):
         """IMPLEMENT_SUB_STEPS constant must list the three sub-steps in order."""
-        assert IMPLEMENT_SUB_STEPS == ("TDD", "review", "push+CI"), (
-            f"IMPLEMENT_SUB_STEPS must be ('TDD','review','push+CI'), "
+        assert IMPLEMENT_SUB_STEPS == ("TDD", "push+CI", "review"), (
+            f"IMPLEMENT_SUB_STEPS must be ('TDD','push+CI','review'), "
             f"got {IMPLEMENT_SUB_STEPS}"
         )
 
@@ -363,7 +363,7 @@ class TestImplementStageIdentity:
 
     def test_implement_stage_sub_steps_order(self):
         """ImplementStage.sub_steps MUST list the three sub-steps in the correct order."""
-        expected = ("TDD", "review", "push+CI")
+        expected = ("TDD", "push+CI", "review")
         assert tuple(ImplementStage.sub_steps) == expected, (
             f"Expected sub_steps={expected}, got {tuple(ImplementStage.sub_steps)}"
         )
@@ -377,11 +377,11 @@ class TestImplementStageIdentity:
     def test_implement_stage_tdd_is_first_sub_step(self):
         assert ImplementStage.sub_steps[0] == "TDD"
 
-    def test_implement_stage_review_is_second_sub_step(self):
-        assert ImplementStage.sub_steps[1] == "review"
+    def test_implement_stage_push_ci_is_second_sub_step(self):
+        assert ImplementStage.sub_steps[1] == "push+CI"
 
-    def test_implement_stage_push_ci_is_third_sub_step(self):
-        assert ImplementStage.sub_steps[2] == "push+CI"
+    def test_implement_stage_review_is_third_sub_step(self):
+        assert ImplementStage.sub_steps[2] == "review"
 
 
 class TestImplementStageInheritance:
