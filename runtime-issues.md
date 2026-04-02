@@ -276,6 +276,119 @@
 
 ---
 
+## R28. Claude CLI 子进程泄漏 — 200+ 僵尸进程占用 20GB+ 内存
+
+**现象**：编排器运行一段时间后，系统中出现 200+ 个 python.exe 进程，每个约 109MB，总计超过 20GB 内存。用户报告"内存快满了"。
+
+**根因**：SDK 模式下，`claude_agent_sdk.query()` 内部通过 `SubprocessCLITransport.connect()` 启动 `claude` CLI 子进程（`anyio.open_process`）。`_sdk_call` 消费完 async generator 后直接 return，没有调用 transport 的 `close()`/`disconnect()`。SDK 的 disconnect 方法有完整的 terminate→kill 清理链（等 5s → SIGTERM → 等 5s → SIGKILL），但因为没被调用，子进程变成孤儿。CLI 模式（`_cli_call`）的 `Popen.communicate()` 不受影响。
+
+13 个 task 完成 × 每个 task 至少 2 次调用（RED + GREEN） × 部分有 retry = 30+ 次调用。加上 spec/plan 阶段的 agent 调用，累积到 200+ 个僵尸进程。
+
+**影响**：
+- 系统内存耗尽，可能导致后续 task 的 agent 调用 OOM 失败
+- Windows 进程句柄泄漏
+- 编排器长时间运行（20+ task）时必然触发
+
+**修复（已应用）**：
+1. `_sdk_call`: `try/finally: await asyncio.wait_for(gen.aclose(), timeout=30)` — 确保 generator 关闭触发 SDK transport cleanup，且 aclose 自身有超时保护防止二次卡死
+2. `_cli_call`: tmpfile 清理移入 `finally` 块，确保所有异常路径都执行
+3. `_cli_call_streaming`: 所有异常路径加 `proc.kill()` + `proc.wait(timeout=10)` 回收句柄
+4. 全局 `_active_procs` 注册表 + `atexit.register(_cleanup_active_procs)` — Ctrl+C / 正常退出时强制 kill 所有残留子进程
+5. 所有 Popen 创建后 `_active_procs.add(proc)`，完成/异常后 `_active_procs.discard(proc)`
+
+**第二轮 Opus 对抗审核修复**：
+6. `except (TimeoutError, Exception)` → `except BaseException` — 捕获 CancelledError 防止 aclose 被跳过（P0 级）
+7. `_active_procs` 加 `threading.Lock` — `_register_proc/_unregister_proc/_cleanup_active_procs` 全部线程安全
+8. `proc.communicate()` (无 timeout) → `proc.wait(timeout=10)` — 防止 communicate 永久阻塞
+9. `_cli_call_streaming` 开头 `proc = None` — 防止异常路径 NameError
+10. OSError handler 中 `if proc is not None:` 守卫 — 防止 Popen 构造失败时 NameError
+
+**Opus 对抗审核遗留风险（已知但未修复）**：
+- `taskkill /F` 强杀时 `atexit` 不执行，子进程仍成孤儿（OS 级限制，无法解决）
+- Windows `shell=True` 的 `proc.kill()` 只 kill `cmd.exe` 不递归 kill 子进程树（需 `taskkill /T /PID`，暂不改）
+- SDK 子进程不经过 `_active_procs`（依赖 `gen.aclose()` 清理，已用 `BaseException` 兜底）
+- V2 的 `adapter.py` 也需要检查同样的问题
+
+---
+
+## R29. `gen.aclose()` 无超时保护 — 子进程挂死时二次卡死
+
+**现象**：SDK `_sdk_call` 中 idle_timeout 触发后，`finally` 块调用 `gen.aclose()` 清理 generator。但 aclose 需要 SDK 内部的 `process_query` finally 块执行（关闭 transport/kill 子进程）。如果子进程处于不响应状态（正是超时的原因），aclose 自身也会卡住，导致整个 event loop 阻塞。
+
+**根因**：超时的根因往往是子进程挂死，而 `aclose()` 的清理依赖同一个挂死的子进程响应。无超时保护的 `await gen.aclose()` 等于让清理操作继承了原问题。
+
+**影响**：event loop 永久阻塞 → `asyncio.run()` 不返回 → `run.py` 的 `finally: engine.close()` 不执行 → 用户只能 `taskkill /F` → atexit 也不执行 → 全部子进程成孤儿。
+
+**修复**：`await asyncio.wait_for(gen.aclose(), timeout=30)` + `except (TimeoutError, Exception): pass`。已应用到 R28 修复中。
+
+---
+
+## R30. `_cli_call_streaming` 异常路径子进程句柄泄漏
+
+**现象**：CLI streaming 模式的 `subprocess.TimeoutExpired` 处理只有 `proc.kill()` 没有 `proc.wait()`，进程句柄未被回收。`OSError`/`SubprocessError` 异常路径完全没有 kill 子进程的逻辑。
+
+**根因**：
+- L319 `TimeoutExpired`: `proc.kill()` 后直接 `return`，没有 `proc.wait()` 回收句柄
+- L328 `OSError`: timer 可能已 cancel，proc 可能仍在运行，但异常处理直接 return
+
+**影响**：Windows 下未 wait 的 killed 进程变僵尸，进程句柄泄漏。与 R28 同类问题但在 CLI 路径。
+
+**修复**：所有异常路径加 `proc.kill()` + `proc.wait(timeout=10)` + `_active_procs.discard(proc)`。已应用。
+
+---
+
+## R31. `_cli_call` agents tmpfile 异常路径泄漏
+
+**现象**：`_cli_call` 中 agents JSON 临时文件用 `delete=False` 创建，清理代码在正常路径末尾。`FileNotFoundError` 和 `OSError` 异常路径 return 前未清理。
+
+**根因**：tmpfile 清理代码不在 `try/finally` 中，early return 跳过了清理。
+
+**影响**：`%TEMP%` 中累积孤儿 JSON 文件。单文件很小，但长期运行累积。
+
+**修复**：tmpfile 清理移入 `finally` 块。已应用。
+
+---
+
+## R32. 无 atexit/signal 处理 — 异常终止时子进程全部成孤儿
+
+**现象**：编排器没有注册 `atexit` 回调或 `signal` 处理器。Ctrl+C 时依赖 `asyncio.run` 的 cancel 传播，但如果 cancel 处理卡住（R29），子进程全部泄漏。
+
+**根因**：`claude_adapter.py` 没有维护活跃子进程的注册表，`engine.close()` 只清理锁和 SQLite，不 kill 子进程。
+
+**影响**：用户 Ctrl+C 或 `taskkill` 后，所有 SDK/CLI 子进程成为孤儿进程持续占用内存。
+
+**修复**：
+- 全局 `_active_procs: set[subprocess.Popen]` 注册表
+- `atexit.register(_cleanup_active_procs)` 在正常退出/Ctrl+C 时 kill 所有残留进程
+- 所有 Popen 创建后 add，完成/异常后 discard
+- 已应用。注意 `taskkill /F` 强杀时 atexit 不执行，这是 OS 级限制。
+
+---
+
+## R33. `"."` 相对路径导致 workflow 创建在错误目录
+
+**现象**：编排器从 spec 阶段重新开始，而不是从 implement 续接。DB 检查显示 spec=completed, implement=running 没有被重置。
+
+**根因**：启动命令中项目路径用 `"."` 相对路径，但 PowerShell 当前目录不是项目目录（如在 `C:\Users\mixstyleman` 执行），导致 `"."` 解析到 home 目录，在那里创建了全新的 `.workflow/workflow.db`。
+
+同样问题在 `launch.py` 的 Wave 模式中更隐蔽：`wsh run` 启动 bootstrap 脚本时，工作目录可能不继承终端的 cwd，`"."` 解析到错误位置。
+
+**影响**：
+- 看似 resume 不工作，实际是操作了错误的 workflow.db
+- 在 home 目录下误创建 `.workflow/` 目录和文件
+- 已完成的 14 个 task 进度"丢失"（实际未丢失，只是读错了 DB）
+
+**修复**：启动命令必须使用完整绝对路径，不要用 `"."`。
+
+**正确的启动命令**（从任意目录执行）：
+```powershell
+python "F:\claude\技能备份\E+S\launch.py" --auto --req-file requirement-v2.md "F:\claude\技能备份\ESSKILLAGENT-v2"
+```
+
+**建议**：`run.py` 和 `launch.py` 应将 `"."` 自动解析为绝对路径（`Path(cwd).resolve()`），或在检测到相对路径时打印 warning 显示实际解析到的目录。
+
+---
+
 ## R27. agents-src/ 知识文件无对应适配任务
 
 **现象**：T018 只改 `orchestrator/agents/registry.py`（注册代码），不改 `agents-src/` 下 14 个 agent 的知识文件。requirement-v2.md 的 A1-A10 agent 适配被压缩进了 registry 层面的 prompt 注入，实际 agent 行为模式（知识文件里的指令）没有 task 去修改。

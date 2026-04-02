@@ -8,9 +8,19 @@ FR-018: CI job name matching uses startswith prefix matching.
 FR-045: Extensible technology registry via config.
 FR-046: File classification uses both extension and path prefix.
 FR-047: CI job name mapping loaded from configuration.
+
+T015 stubs (not yet implemented):
+FR-008: Complete tests_must_fail / tests_must_pass implementations.
+FR-009: _commit_and_push with 3-retry logic.
+FR-010: auto-detect project stack.
+FR-011: configurable job name mapping.
+FR-080: Python stack detection.
+FR-090: async thread delegation.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from orchestrator.checks.base import CheckStrategy
 
@@ -26,13 +36,21 @@ class CICheckStrategy(CheckStrategy):
             "technology_registry", {}
         )
 
+    # ------------------------------------------------------------------
+    # CheckStrategy ABC — stub implementations (T015: to be completed)
+    # ------------------------------------------------------------------
+
     def tests_must_fail(self, task_id: str, command: str) -> bool:
-        """Return False — CI not triggered in unit test context."""
+        """Return False — CI not triggered in unit test context (stub)."""
         return False
 
     def tests_must_pass(self, task_id: str, command: str) -> bool:
-        """Return False — CI not triggered in unit test context."""
+        """Return False — CI not triggered in unit test context (stub)."""
         return False
+
+    # ------------------------------------------------------------------
+    # evaluate() — stack-scoped job evaluation
+    # ------------------------------------------------------------------
 
     def evaluate(self, ci_results: list[dict], stack: str | None = None) -> dict:
         """Evaluate CI job results, optionally filtered by technology stack.
@@ -73,3 +91,57 @@ class CICheckStrategy(CheckStrategy):
             "status": job["status"],
             "output": output[:_MAX_OUTPUT_CHARS],
         }
+
+    # ------------------------------------------------------------------
+    # T015 stubs — return minimal/empty values so tests fail on
+    # AssertionError (not NotImplementedError).
+    # ------------------------------------------------------------------
+
+    def _run_ci_and_wait(self, task_id: str, command: str) -> list[dict]:
+        """Trigger CI and wait for job results.
+
+        Stub: not yet implemented. Returns empty list.
+        """
+        return []
+
+    def _commit_and_push(self, message: str, files: list[str]) -> None:
+        """Commit the given files and push to remote with 3-retry logic.
+
+        Stub: not yet implemented. Does nothing.
+        """
+        pass
+
+    def detect_stack(self, project_dir: Path | None = None) -> str:
+        """Auto-detect the project stack from marker files.
+
+        Stub: not yet implemented. Always returns 'unknown'.
+        """
+        return "unknown"
+
+    def get_job_name_mapping(self) -> dict[str, list[str]]:
+        """Return the configured CI job name mapping.
+
+        Stub: not yet implemented. Returns empty dict.
+        """
+        return {}
+
+    def tests_must_fail_async(self, task_id: str, command: str):
+        """Async variant of tests_must_fail via thread delegation.
+
+        Stub: not yet implemented. Returns None (not awaitable).
+        """
+        return None
+
+    def tests_must_pass_async(self, task_id: str, command: str):
+        """Async variant of tests_must_pass via thread delegation.
+
+        Stub: not yet implemented. Returns None (not awaitable).
+        """
+        return None
+
+    def run_in_thread(self, fn, *args, **kwargs):
+        """Execute fn in a background thread and return a Future.
+
+        Stub: not yet implemented. Returns None.
+        """
+        return None
